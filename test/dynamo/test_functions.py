@@ -4608,6 +4608,85 @@ class GraphModule(torch.nn.Module):
 
         self.assertEqual(result, torch.sin(x))
 
+    def test_method_wrapper_as_input(self):
+        bound = "hello".__add__
+
+        @torch.compile(backend="eager", fullgraph=True)
+        def fn(method, val):
+            return method(val)
+
+        self.assertEqual(fn(bound, " world"), "hello world")
+
+    def test_member_descriptor_get_as_input(self):
+        class Foo:
+            __slots__ = ("x",)
+
+            def __init__(self, x):
+                self.x = x
+
+        getter = Foo.__dict__["x"].__get__
+
+        @torch.compile(backend="eager", fullgraph=True)
+        def fn(getter, obj):
+            return getter(obj)
+
+        self.assertEqual(fn(getter, Foo(42)), 42)
+
+    def test_getset_descriptor_get_as_input(self):
+        getter = torch.Tensor.shape.__get__
+
+        @torch.compile(backend="eager", fullgraph=True)
+        def fn(getter, t):
+            return getter(t)
+
+        self.assertEqual(fn(getter, torch.ones(2, 3)), torch.Size([2, 3]))
+
+    def test_method_descriptor_on_wrong_type(self):
+        import types
+
+        @torch.compile(backend="eager")
+        def fn():
+            mp = types.MappingProxyType({"x": 42})
+            return dict.get(mp, "x", None)
+
+        with self.assertRaises(TypeError):
+            fn()
+
+    def test_bound_builtin_method_as_input(self):
+        fs = frozenset({1, 2, 3})
+        contains = fs.__contains__
+
+        @torch.compile(backend="eager", fullgraph=True)
+        def fn(method, val):
+            return method(val)
+
+        self.assertTrue(fn(contains, 2))
+        self.assertFalse(fn(contains, 5))
+
+    def test_bound_builtin_method_as_input_new(self):
+        upper = "hello".upper
+
+        @torch.compile(backend="eager", fullgraph=True)
+        def fn(method):
+            return method()
+
+        self.assertEqual(fn(upper), "HELLO")
+
+    def test_function_descriptor_get(self):
+        def greet(self):
+            return "hello from " + self.name
+
+        class Foo:
+            def __init__(self, name):
+                self.name = name
+
+        @torch.compile(backend="eager", fullgraph=True)
+        def fn(func, obj):
+            bound = func.__get__(obj)
+            return bound()
+
+        self.assertEqual(fn(greet, Foo("world")), "hello from world")
+
 
 def udf_mul(x, y):
     return x * y

@@ -1,6 +1,7 @@
 FROM quay.io/pypa/manylinux_2_28_aarch64 as base
 
 ARG GCCTOOLSET_VERSION=13
+ARG MAX_JOBS
 
 # Language variables
 ENV LC_ALL=en_US.UTF-8
@@ -16,6 +17,7 @@ RUN yum install -y \
   automake \
   bison \
   bzip2 \
+  ccache \
   curl \
   diffutils \
   file \
@@ -58,11 +60,14 @@ RUN git config --global --add safe.directory "*"
 FROM base as openblas
 # Install openblas
 ARG OPENBLAS_VERSION
+ARG USE_CCACHE=0
 ADD ./common/install_openblas.sh install_openblas.sh
 RUN bash ./install_openblas.sh && rm install_openblas.sh
 
 # Install Arm Compute Library
 FROM base as arm_compute
+ARG ACL_VERSION
+ARG USE_CCACHE=0
 # use python3.9 to install scons
 RUN python3.9 -m pip install scons==4.7.0
 RUN ln -sf /opt/python/cp39-cp39/bin/scons /usr/local/bin

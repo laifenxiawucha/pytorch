@@ -28,6 +28,13 @@ jobs:
       issue_owner: ${{ github.event.pull_request.user.login || github.event.issue.user.login }}
       curr_branch: ${{ github.head_ref || github.ref_name }}
 
+  print-ci-docker-hash:
+    needs: get-label-type
+    runs-on: ubuntu-latest
+    steps:
+      - name: Print ci-docker-hash
+        run: echo "ci-docker-hash=${{ needs.get-label-type.outputs.ci-docker-hash }}"
+
   get-changed-files:
     if: github.repository_owner == 'pytorch'
     name: Get changed files

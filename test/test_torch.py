@@ -10738,6 +10738,23 @@ tensor([[[1.+1.j, 1.+1.j, 1.+1.j,  ..., 1.+1.j, 1.+1.j, 1.+1.j],
         with self.assertRaisesRegex(RuntimeError, "expected scalar type .* but found"):
             torch.compile(lambda x, y: torch.matmul(x, y), fullgraph=True)(a, b)
 
+    def test_mm_matmul_2d_mixed_dtype_error(self):
+        a = torch.randn(8, 8, dtype=torch.float16)
+        b = torch.randn(8, 64, dtype=torch.float32)
+        err = "same dtype"
+
+        with self.assertRaisesRegex(RuntimeError, err):
+            torch.mm(a, b)
+
+        with self.assertRaisesRegex(RuntimeError, err):
+            torch.compile(lambda x, y: torch.mm(x, y), fullgraph=True)(a, b)
+
+        with self.assertRaisesRegex(RuntimeError, err):
+            torch.matmul(a, b)
+
+        with self.assertRaisesRegex(RuntimeError, err):
+            torch.compile(lambda x, y: torch.matmul(x, y), fullgraph=True)(a, b)
+
     def test_conj_neg_tolist(self):
         x = torch.randn(2, dtype=torch.cfloat)
         y1 = x.conj()

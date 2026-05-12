@@ -3094,6 +3094,10 @@ DistributeWithDeviceOrderTestWithLocalTensor = create_local_tensor_test_class(
     base_class=LocalDTensorContinuousTestBase,
 )
 
+DistributeWithStridedShardTestLocalTensor = create_local_tensor_test_class(
+    DistributeWithStridedShardTest,
+)
+
 
 class _CollectiveDtypeTracer(torch.utils._python_dispatch.TorchDispatchMode):
     """Records the dtype of the first tensor argument for each _c10d_functional op."""
@@ -3174,7 +3178,6 @@ class RedistributeBackwardDtypeTest(TestCase):
         self.assertEqual(tracer.dtypes_for("all_gather_into_tensor"), [torch.bfloat16])
         self.assertEqual(tracer.dtypes_for("reduce_scatter_tensor"), [torch.float32])
         self.assertEqual(local.grad.dtype, torch.float32)
-
 
 if __name__ == "__main__":
     run_tests()

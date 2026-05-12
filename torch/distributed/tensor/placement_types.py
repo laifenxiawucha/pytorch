@@ -719,7 +719,7 @@ class _StridedShard(torch._C._distributed.StridedShard):
         Needed for passing this type as an opaque object input to a custom op.
         """
         return (
-            f"torch.distributed.tensor.placement_types._StridedShard(dim={self.dim}, sf={self.split_factor})",  # noqa: B950
+            f"torch.distributed.tensor.placement_types._StridedShard(dim={self.dim}, sf={self.split_factor})",
             {},
         )
 
@@ -1486,7 +1486,7 @@ class _MaskPartial(Partial):
         Needed for passing this type as an input to a custom op.
         """
         return (
-            f"torch.distributed.tensor.placement_types.MaskPartial(reduce_op={self.reduce_op}, offset_shape={self.offset_shape}, offset_dim={self.offset_dim})",  # noqa: B950
+            f"torch.distributed.tensor.placement_types.MaskPartial(reduce_op={self.reduce_op}, offset_shape={self.offset_shape}, offset_dim={self.offset_dim})",
             {},
         )
 

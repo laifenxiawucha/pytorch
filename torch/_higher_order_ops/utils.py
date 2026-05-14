@@ -332,12 +332,7 @@ def _set_compilation_env():
 
 # The invariant here is that we always trace the branch with fake tensor
 def _maybe_fake_tracing(fn, inputs: list[Any], pre_dispatch):
-    fake_mode_det = None
-    for inp in pytree.tree_leaves(inputs):
-        if isinstance(inp, FakeTensor):
-            fake_mode_det = inp.fake_mode
-            break
-
+    fake_mode_det = detect_fake_mode(inputs)
     fake_mode: AbstractContextManager = nullcontext()
     tracing_mode = "fake"
     if fake_mode_det is not None:
@@ -348,12 +343,24 @@ def _maybe_fake_tracing(fn, inputs: list[Any], pre_dispatch):
     # code that happens in make_fx e.g. we now call as_strided when wrapping tensor
     # as fake tensor.
     with fake_mode, disable_proxy_modes_tracing():
-        gm = make_fx(
-            fn,
-            tracing_mode=tracing_mode,
-            pre_dispatch=pre_dispatch,
-            _error_on_data_dependent_ops=False,
-        )(*inputs)
+        from torch.fx.experimental.symbolic_shapes import ShapeEnv
+
+        shape_env = fake_mode_det.shape_env if fake_mode_det is not None else None
+        ignore_fresh_unbacked = (
+            shape_env.ignore_fresh_unbacked_symbols()
+            if shape_env is not None
+            else ShapeEnv().ignore_fresh_unbacked_symbols()
+        )
+        # This graph is used only to answer alias/mutation questions. Fresh
+        # unbacked symbols created during the trace are therefore discarded with
+        # the graph and should not require bindings in the surrounding graph.
+        with ignore_fresh_unbacked:
+            gm = make_fx(
+                fn,
+                tracing_mode=tracing_mode,
+                pre_dispatch=pre_dispatch,
+                _error_on_data_dependent_ops=False,
+            )(*inputs)
         if not isinstance(fake_mode, nullcontext) and fake_mode.shape_env is not None:  # type: ignore[attr-defined]
             insert_deferred_runtime_asserts(
                 gm,

@@ -1443,6 +1443,11 @@ def compute_unbacked_bindings(
 
     pending = set(fresh_sym)
     ignorable = set(ign_sym)
+    if shape_env._ignore_fresh_unbacked_symbols_tls():
+        # The active fake/metadata propagation is allowed to discard unbacked
+        # symbols. Do not require symbols that remain pending at this binding
+        # point to appear in the returned value.
+        ignorable.update(pending)
     if not peek:
         if pending:
             log.info("compute_unbacked_bindings %s", fresh_sym)

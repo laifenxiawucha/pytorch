@@ -2,6 +2,7 @@
 import functools
 import itertools
 import math
+import unittest
 
 import torch
 import torch._inductor.config
@@ -21,7 +22,6 @@ from torch.testing._internal.common_utils import (
     IS_LINUX,
     skipIfXpu,
     TEST_WITH_ROCM,
-    xfailIf,
 )
 from torch.testing._internal.inductor_utils import (
     GPU_TYPE,
@@ -1754,10 +1754,10 @@ if HAS_CPU:
             TestSDPAPatternRewriterTemplate._test_pattern_fails_with_reuse
         )
         test_sdpa_rewriter_2_cpu = TestSDPAPatternRewriterTemplate._test_sdpa_rewriter_2
-        # see https://github.com/pytorch/pytorch/issues/177244
-        test_sdpa_rewriter_5_cpu = xfailIf(IS_ARM64 and IS_CPU_CAPABILITY_SVE256)(
-            TestSDPAPatternRewriterTemplate._test_sdpa_rewriter_5
-        )
+        test_sdpa_rewriter_5_cpu = unittest.skipIf(
+            IS_ARM64 and IS_CPU_CAPABILITY_SVE256,
+            "Temporarily skipped pending https://github.com/pytorch/pytorch/pull/183697",
+        )(TestSDPAPatternRewriterTemplate._test_sdpa_rewriter_5)
         test_pattern_fails_with_tensor_factor_cpu = (
             TestSDPAPatternRewriterTemplate._test_pattern_fails_with_tensor_factor
         )
@@ -1776,10 +1776,10 @@ if HAS_CPU:
         test_sdpa_rewriter_13_cpu = functools.partialmethod(
             TestSDPAPatternRewriterTemplate._test_sdpa_rewriter_13, dtype=torch.float32
         )
-        # see https://github.com/pytorch/pytorch/issues/177244
-        test_sdpa_rewriter_14_cpu = xfailIf(IS_ARM64 and IS_CPU_CAPABILITY_SVE256)(
-            TestSDPAPatternRewriterTemplate._test_sdpa_rewriter_14
-        )
+        test_sdpa_rewriter_14_cpu = unittest.skipIf(
+            IS_ARM64 and IS_CPU_CAPABILITY_SVE256,
+            "Temporarily skipped pending https://github.com/pytorch/pytorch/pull/183697",
+        )(TestSDPAPatternRewriterTemplate._test_sdpa_rewriter_14)
         test_sdpa_rewriter_15_cpu = functools.partialmethod(
             TestSDPAPatternRewriterTemplate._test_sdpa_rewriter_15
         )

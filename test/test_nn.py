@@ -6866,8 +6866,10 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
         self.assertEqual(expected_out_t, out_t)
 
     @unittest.skipIf(IS_WINDOWS and IS_ARM64, "Fails as 'Unexpected success' on Windows ARM64")
-    @xfailIf(IS_ARM64 and IS_CPU_EXT_SVE_SUPPORTED and not IS_CPU_CAPABILITY_SVE)
-    # see https://github.com/pytorch/pytorch/issues/177250
+    @unittest.skipIf(
+        IS_ARM64 and IS_CPU_EXT_SVE_SUPPORTED and not IS_CPU_CAPABILITY_SVE,
+        "Temporarily skipped pending https://github.com/pytorch/pytorch/pull/182034",
+    )
     def test_upsampling_bfloat16(self, dtype=torch.bfloat16):
         def helper(size, scale_factor, mode, device, memory_format=torch.contiguous_format):
             input = torch.randn(size, device=device, dtype=dtype).to(memory_format=memory_format).detach().requires_grad_(True)

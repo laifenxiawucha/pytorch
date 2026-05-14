@@ -169,7 +169,10 @@ class AutoHeuristic:
         if torch.cuda.is_available():
             device_name = torch.cuda.get_device_name().replace(" ", "_")
             return device_name
-        return "non_cuda_device"
+        if torch.xpu.is_available():
+            device_name = torch.xpu.get_device_name().replace(" ", "_")
+            return device_name
+        return "unknown_device"
 
     def get_default_log_path(self) -> str:
         device_name = self.get_device_identifier()

@@ -951,7 +951,9 @@ void ConfigureAndLaunchGammaBetaBackwardKernel(
 
 }
 
-template<typename T, typename T_ACC, bool rms_norm>
+// Accept block_dim_x as a template parameter so ROCm can dispatch launch
+// shapes based on runtime warp size while preserving compile-time specialization.
+template<typename T, typename T_ACC, int block_dim_x, bool rms_norm>
 void LaunchGammaBetaBackwardCUDAKernel(
     const T* dY_data,
     const T* X_data,
@@ -962,11 +964,6 @@ void LaunchGammaBetaBackwardCUDAKernel(
     Tensor* dgamma,
     Tensor* dbeta,
     cudaStream_t cuda_stream) {
-#ifdef USE_ROCM
-  constexpr int block_dim_x = 64;
-#else
-  constexpr int block_dim_x = 32;
-#endif
   const int sm_count = at::cuda::getCurrentDeviceProperties()->multiProcessorCount;
   if (M > 64 * 1024 && N / block_dim_x < sm_count / 2) {
     // We have a situation where M >> N and N is small.
@@ -1022,9 +1019,18 @@ void LaunchGammaBetaBackwardCUDAKernel(
       ConfigureAndLaunchGammaBetaBackwardKernel<T, T_ACC, block_dim_x, 16, 128, rms_norm>(dY_data, X_data, mean_data, rstd_data, M, N, dgamma, dbeta, cuda_stream);
     } else {
 #ifdef USE_ROCM
-      // Cap block_dim_y at 16 to keep total threads (64*16=1024) within GPU limits.
-      // rows_per_thread_y = 256/16 = 16, still within warp size constraint.
-      ConfigureAndLaunchGammaBetaBackwardKernel<T, T_ACC, block_dim_x, 16, 256, rms_norm>(dY_data, X_data, mean_data, rstd_data, M, N, dgamma, dbeta, cuda_stream);
+      if constexpr (block_dim_x == 64) {
+        // GCN/CDNA devices use warp size 64 in ROCm.
+        // Cap block_dim_y at 16 to keep total threads (64*16=1024) within GPU limits.
+        // rows_per_thread_y = 256/16 = 16, still within warp size constraint.
+        ConfigureAndLaunchGammaBetaBackwardKernel<T, T_ACC, block_dim_x, 16, 256, rms_norm>(dY_data, X_data, mean_data, rstd_data, M, N, dgamma, dbeta, cuda_stream);
+      } else {
+        static_assert(block_dim_x == 32);
+        // RDNA devices (gfx10, gfx11, gfx12) use warp size 32 in ROCm.
+        // Use block_dim_y = 32 to keep total threads at 32*32=1024 within GPU limits.
+        // rows_per_thread_y = 256/32 = 8, still within warp size constraint.
+        ConfigureAndLaunchGammaBetaBackwardKernel<T, T_ACC, block_dim_x, 32, 256, rms_norm>(dY_data, X_data, mean_data, rstd_data, M, N, dgamma, dbeta, cuda_stream);
+      }
 #else
       ConfigureAndLaunchGammaBetaBackwardKernel<T, T_ACC, block_dim_x, 32, 256, rms_norm>(dY_data, X_data, mean_data, rstd_data, M, N, dgamma, dbeta, cuda_stream);
 #endif
@@ -1635,15 +1641,25 @@ void LayerNormBackwardKernelImplInternal(
               dbeta_data);
       C10_CUDA_KERNEL_LAUNCH_CHECK();
     } else {
-      // Use the optimized tiled kernel adapted for wavefront-64.
+      // Use the optimized tiled kernel adapted for the current warp size.
       // This replaces the legacy two-pass cuComputePartGradGammaBeta +
       // cuComputeGradGammaBeta approach with a single-pass tiled reduction
       // that has coalesced memory access and adaptive tile sizing.
-      LaunchGammaBetaBackwardCUDAKernel<T, T_ACC, rms_norm>(
-        dY_data, X_data, mean_data, rstd_data, M, N, dgamma, dbeta, cuda_stream);
+      if (warp_size == 64) {
+        LaunchGammaBetaBackwardCUDAKernel<T, T_ACC, 64, rms_norm>(
+          dY_data, X_data, mean_data, rstd_data, M, N, dgamma, dbeta, cuda_stream);
+      } else if (warp_size == 32) {
+        LaunchGammaBetaBackwardCUDAKernel<T, T_ACC, 32, rms_norm>(
+          dY_data, X_data, mean_data, rstd_data, M, N, dgamma, dbeta, cuda_stream);
+      } else {
+        TORCH_INTERNAL_ASSERT(
+            false,
+            "Unexpected ROCm warp size: ",
+            warp_size);
+      }
     }
 #else
-    LaunchGammaBetaBackwardCUDAKernel<T, T_ACC, rms_norm>(
+    LaunchGammaBetaBackwardCUDAKernel<T, T_ACC, 32, rms_norm>(
       dY_data, X_data, mean_data, rstd_data, M, N, dgamma, dbeta, cuda_stream);
 #endif
   }

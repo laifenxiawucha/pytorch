@@ -4968,6 +4968,12 @@ def forward(self, child : torch.Tensor, child_1 : torch.Tensor, child_2 : torch.
         self.assertEqual(len(cnt.graphs), 1)
         graph = cnt.graphs[0]
         norm_graph = normalize_gm(graph.print_readable(print_output=False))
+        # On ROCm, auto-detection sets BLOCKS_ARE_CONTIGUOUS=True for causal
+        # masks. Normalize to False for graph structure comparison since the
+        # auto-detection is verified by test_auto_detect_contiguous_compile.
+        norm_graph = norm_graph.replace(
+            "'BLOCKS_ARE_CONTIGUOUS': True", "'BLOCKS_ARE_CONTIGUOUS': False"
+        )
         self.assertExpectedInline(
             norm_graph,
             """\

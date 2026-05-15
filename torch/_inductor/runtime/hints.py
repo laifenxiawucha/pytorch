@@ -113,6 +113,7 @@ else:
         defaults=[(), (), ()],
     )
 
+
 class HeuristicType(Enum):
     PERSISTENT_REDUCTION = auto()
     POINTWISE = auto()

@@ -4908,6 +4908,9 @@ def rev(x, dims):
     x_loader = x.make_loader()
     sizes = x.get_size()
 
+    if len(sizes) == 0:
+        return clone(x)
+
     def loader(idx):
         idx = list(idx)
         assert len(idx) == len(sizes)

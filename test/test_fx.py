@@ -4686,6 +4686,156 @@ event={kernel_event} node=add stack_trace=a = s + self.c"""
         )
 
 
+    @staticmethod
+    def _capture_gm(fn, *example_inputs):
+        """Compile ``fn`` with dynamic shapes, return the captured GraphModule."""
+        from torch._dynamo.testing import EagerAndRecordGraphs
+
+        backend = EagerAndRecordGraphs()
+        torch.compile(fn, dynamic=True, backend=backend)(*example_inputs)
+        return backend.graphs[-1]
+
+    @staticmethod
+    def _find_placeholder(gm, example_value_type):
+        """Return the first placeholder whose ``meta['example_value']`` is an
+        instance of ``example_value_type``."""
+        return next(
+            n
+            for n in gm.graph.nodes
+            if n.op == "placeholder"
+            and isinstance(n.meta.get("example_value"), example_value_type)
+        )
+
+    def test_materialize_symints_basic(self):
+        """``Graph.materialize_symints`` lowers each SymInt input into an FX
+        subgraph rooted at existing symbol producers."""
+        gm = self._capture_gm(lambda x: x + 1, torch.randn(8, 4))
+        # Pick a tensor placeholder so we can derive its symbolic dims.
+        tensor_placeholder = self._find_placeholder(gm, torch.Tensor)
+        h, _ = tensor_placeholder.meta["example_value"].shape  # h is a SymInt
+        self.assertIsInstance(h, torch.SymInt)
+
+        result = gm.graph.materialize_symints([h - 1, 3 * (h - 1), (h - 1) ** 2, 5])
+
+        # Plain int passes through, the rest are Nodes.
+        self.assertEqual(result[3], 5)
+        for got in result[:3]:
+            self.assertIsInstance(got, torch.fx.Node)
+
+        self.assertExpectedInline(
+            str(gm.graph).strip(),
+            """\
+graph():
+    %s77 : torch.SymInt [num_users=3] = placeholder[target=s77]
+    %s27 : torch.SymInt [num_users=0] = placeholder[target=s27]
+    %l_x_ : torch.Tensor [num_users=1] = placeholder[target=L_x_]
+    %add : [num_users=1] = call_function[target=operator.add](args = (%l_x_, 1), kwargs = {})
+    return (add,)
+    %add_1 : [num_users=0] = call_function[target=operator.add](args = (-1, %s77), kwargs = {})
+    %mul : [num_users=1] = call_function[target=operator.mul](args = (3, %s77), kwargs = {})
+    %add_2 : [num_users=0] = call_function[target=operator.add](args = (-3, %mul), kwargs = {})
+    %add_3 : [num_users=1] = call_function[target=operator.add](args = (-1, %s77), kwargs = {})
+    %pow_1 : [num_users=0] = call_function[target=operator.pow](args = (%add_3, 2), kwargs = {})""",
+        )
+
+    def test_materialize_symints_constant_symint(self):
+        """A SymInt whose expression has folded to a constant is unwrapped
+        to a plain ``int`` rather than emitting any FX nodes."""
+        gm = self._capture_gm(lambda x: x + 1, torch.randn(8, 4))
+        tensor_placeholder = self._find_placeholder(gm, torch.Tensor)
+        h = tensor_placeholder.meta["example_value"].shape[0]
+        self.assertIsInstance(h, torch.SymInt)
+
+        const = h - h  # = 0, constant SymInt
+        result = gm.graph.materialize_symints([const])
+        self.assertEqual(result, [0])
+        self.assertIsInstance(result[0], int)
+
+    def test_materialize_symints_missing_symbol_rejects(self):
+        """Materializing a SymInt whose symbol has no producer in the graph
+        raises ``AssertionError`` rather than producing a dangling node."""
+        from torch.fx.experimental.symbolic_shapes import ShapeEnv
+
+        # Manufacture a SymInt with a non-constant symbol (no graph needed).
+        shape_env = ShapeEnv()
+        h = shape_env.create_unbacked_symint()
+        self.assertIsInstance(h, torch.SymInt)
+
+        # Empty graph has no producer for `h`'s symbol → must reject.
+        empty_graph = torch.fx.Graph()
+        with self.assertRaisesRegex(AssertionError, "no producer in the graph"):
+            empty_graph.materialize_symints([h])
+
+    def test_materialize_symints_symint_placeholder(self):
+        """When the symbol is produced by a top-level SymInt placeholder, the
+        placeholder itself is used as the symbol's producer — no
+        `sym_size.int` node is emitted."""
+        gm = self._capture_gm(lambda n: torch.zeros(n + 1), 8)
+        sym_placeholder = self._find_placeholder(gm, torch.SymInt)
+        s = sym_placeholder.meta["example_value"]
+        self.assertIsInstance(s, torch.SymInt)
+
+        result = gm.graph.materialize_symints([s + 2, s * 3])
+        self.assertEqual(len(result), 2)
+        for got in result:
+            self.assertIsInstance(got, torch.fx.Node)
+
+        # The new `add_1` and `mul` reference `%l_n_` (the SymInt placeholder)
+        # directly — no `aten.sym_size.int` node was emitted to recover `s`.
+        self.assertExpectedInline(
+            str(gm.graph).strip(),
+            """\
+graph():
+    %l_n_ : torch.SymInt [num_users=3] = placeholder[target=L_n_]
+    %add : [num_users=1] = call_function[target=operator.add](args = (%l_n_, 1), kwargs = {})
+    %zeros : [num_users=1] = call_function[target=torch.zeros](args = (%add,), kwargs = {})
+    return (zeros,)
+    %add_1 : [num_users=0] = call_function[target=operator.add](args = (2, %l_n_), kwargs = {})
+    %mul : [num_users=0] = call_function[target=operator.mul](args = (3, %l_n_), kwargs = {})""",
+        )
+
+    def test_materialize_symints_item_unbacked(self):
+        """When a symbol is produced by a data-dependent op like ``.item()``
+        (an unbacked SymInt), the producing FX node is used as the root —
+        which is what protects the ``.item()`` call from DCE."""
+        from torch._dynamo.testing import EagerAndRecordGraphs
+
+        backend = EagerAndRecordGraphs()
+
+        def f(x):
+            n = x.item()
+            torch._check(n >= 1)
+            return torch.zeros(n + 2)
+
+        with torch._dynamo.config.patch(capture_scalar_outputs=True):
+            torch.compile(f, dynamic=True, backend=backend)(torch.tensor(5))
+        gm = backend.graphs[-1]
+
+        item_node = next(
+            n for n in gm.graph.nodes if n.op == "call_method" and n.target == "item"
+        )
+        u = item_node.meta["example_value"]
+        self.assertIsInstance(u, torch.SymInt)
+
+        result = gm.graph.materialize_symints([u + 5])
+        self.assertEqual(len(result), 1)
+        self.assertIsInstance(result[0], torch.fx.Node)
+
+        # The new `add_1` references `%item` directly.
+        self.assertExpectedInline(
+            str(gm.graph).strip(),
+            """\
+graph():
+    %l_x_ : torch.Tensor [num_users=1] = placeholder[target=L_x_]
+    %item : [num_users=3] = call_method[target=item](args = (%l_x_,), kwargs = {})
+    %ge : [num_users=1] = call_function[target=operator.ge](args = (%item, 1), kwargs = {})
+    %_check : [num_users=0] = call_function[target=torch._check](args = (%ge,), kwargs = {})
+    %add : [num_users=1] = call_function[target=operator.add](args = (%item, 2), kwargs = {})
+    %zeros : [num_users=1] = call_function[target=torch.zeros](args = (%add,), kwargs = {})
+    return (zeros,)
+    %add_1 : [num_users=0] = call_function[target=operator.add](args = (5, %item), kwargs = {})""",
+        )
+
 def run_getitem_target():
     from torch.fx._symbolic_trace import _wrapped_methods_to_patch
 

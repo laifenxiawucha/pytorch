@@ -21,11 +21,16 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Literal, NamedTuple, TYPE_CHECKING
 
+import sympy
+
 import torch
 import torch.utils._pytree as pytree
 from torch._C import _fx_map_arg as map_arg, _NodeIter
 from torch._library.opaque_object import get_opaque_obj_repr, is_opaque_value_type
+from torch.types import py_sym_types
 from torch.utils._dtype_abbrs import dtype_abbrs
+from torch.utils._sympy.interp import sympy_interp
+from torch.utils._sympy.reference import PythonReferenceAnalysis
 
 from . import _pytree as fx_pytree
 from ._compatibility import compatibility
@@ -1538,6 +1543,15 @@ class Graph:
             if not isinstance(kwargs, dict):
                 raise AssertionError(f"kwargs must be a dict, got {type(kwargs)}")
 
+        if args or kwargs:
+            for val in pytree.tree_iter((args, kwargs)):
+                if isinstance(val, (torch.SymInt, torch.SymFloat, torch.SymBool)):
+                    raise RuntimeError(
+                        f"Raw {type(val).__name__} value ({val}) passed as argument to "
+                        f"Graph.create_node(op='{op}', target={target}). "
+                        f"Use create_*_node() helpers (e.g. create_size_node, create_stride_node, create_storage_offset_node) instead."
+                    )
+
         candidate = name if name is not None else self._target_to_str(target)
         name = self._graph_namespace.create_name(candidate, None)
         n = Node(self, name, op, target, args, kwargs, type_expr)
@@ -1892,6 +1906,176 @@ class Graph:
         return self.create_node(
             "call_function", the_function, args, kwargs, name=name, type_expr=type_expr
         )
+
+    @staticmethod
+    def _get_tensor_meta_val(tensor_node: Node) -> tuple[Any, str]:
+        """Read the example tensor stored on ``tensor_node`` under either
+        ``meta['val']`` (export / proxy_tensor convention) or
+        ``meta['example_value']`` (dynamo convention).
+
+        Returns ``(value, key)`` where ``key`` is the meta key the value was
+        found under (defaulting to ``"val"`` if no meta is present). Callers
+        that emit a new node should mirror ``key`` so the new node matches
+        the surrounding graph's convention.
+        """
+        val = tensor_node.meta.get("val")
+        if val is not None:
+            return val, "val"
+        val = tensor_node.meta.get("example_value")
+        if val is not None:
+            return val, "example_value"
+        return None, "val"
+
+    @compatibility(is_backward_compatible=False)
+    def create_size_node(self, tensor_node: Node, dim: int) -> Node:
+        """Create an FX node for ``tensor_node.size(dim)``."""
+        val, key = self._get_tensor_meta_val(tensor_node)
+        node = self.call_function(torch.ops.aten.sym_size.int, (tensor_node, dim))
+        if val is not None:
+            node.meta[key] = val.size(dim)
+        return node
+
+    @compatibility(is_backward_compatible=False)
+    def create_stride_node(self, tensor_node: Node, dim: int) -> Node:
+        """Create an FX node for ``tensor_node.stride(dim)``."""
+        val, key = self._get_tensor_meta_val(tensor_node)
+        node = self.call_function(torch.ops.aten.sym_stride.int, (tensor_node, dim))
+        if val is not None:
+            node.meta[key] = val.stride(dim)
+        return node
+
+    @compatibility(is_backward_compatible=False)
+    def create_storage_offset_node(self, tensor_node: Node) -> Node:
+        """Create an FX node for ``tensor_node.storage_offset()``."""
+        val, key = self._get_tensor_meta_val(tensor_node)
+        node = self.call_function(
+            torch.ops.aten.sym_storage_offset.default, (tensor_node,)
+        )
+        if val is not None:
+            node.meta[key] = val.storage_offset()
+        return node
+
+    @compatibility(is_backward_compatible=False)
+    def materialize_symints(
+        self, values: Sequence[torch.SymInt | int]
+    ) -> list[Node | int]:
+        """Materialize a list of ``SymInt``/``int`` values as FX subgraphs rooted
+        at existing nodes in this graph whose meta produces the referenced
+        symbols (typically SymInt placeholders or other sym ops).
+
+        For each input:
+          - plain ``int`` (or other constant) → returned as-is
+          - constant SymInt (e.g. ``SymInt(Integer(3))``) → returned as ``int(s)``
+          - non-constant SymInt → materialized as an FX subgraph; the returned
+            ``Node``'s ``meta["val"]`` equals the input SymInt
+
+        Sub-expressions shared across inputs are emitted exactly once with
+        hash-consing on the underlying ``expr_to_proxy`` map.
+
+        Concrete example -- consider a graph with a tensor placeholder
+        ``%x`` of shape ``(s32, s32)`` and we want to record this stride
+        as an FX value to pass to a later op:
+
+        * ``g.create_stride_node(%x, 0)`` emits ``%t = aten.sym_stride.int(%x, 0)``.
+          The semantics of this op are "ask ``%x`` for its current stride at
+          dim 0". If a later pass (e.g. mkldnn channels-last conversion) mutates
+          ``%x``'s layout, re-running ``FakeTensorProp`` will overwrite
+          ``%t.meta["val"]`` with the NEW stride. This is the right behavior
+          when you want a *live* query on the producer.
+
+        * ``g.materialize_symints([%x.meta["val"].stride(0)])`` walks the sympy
+          expression ``s32`` and emits an FX subgraph that recomputes it from
+          the existing producer of ``s32`` (here the placeholder ``%x`` itself
+          via ``aten.sym_size.int(%x, 0)``, or a SymInt placeholder if one
+          exists). The resulting node's value is "what ``s32`` is at runtime"
+          -- which is determined by the input's shape and is INDEPENDENT of any
+          layout change to ``%x`` (size is invariant under layout transforms,
+          stride is not). This is the right behavior when you want to *freeze*
+          the trace-time stride into the graph.
+        """
+        # TODO: consider caching `expr_to_proxy` / `sym_size_sources` across
+        # calls (invalidated on graph mutation) — currently we walk all of
+        # `self.nodes` on every invocation, which is O(N_nodes) per call.
+
+        # Build the symbol -> Proxy map once; shared across all inputs so common
+        # sub-expressions across symints get hash-consed into single subgraphs.
+        tracer = torch.fx.proxy.GraphAppendingTracer(self)
+        expr_to_proxy: dict[sympy.Expr, torch.fx.Proxy] = {}
+        # Lazy registry: symbol -> (tensor_placeholder, dim). Used when a
+        # symbol only appears in a tensor placeholder's *shape* and there's
+        # no existing dedicated SymInt-valued node for it. We'll emit a
+        # `aten.sym_size.int(ph, dim)` lazily if the symbol is actually
+        # referenced by one of the requested values.
+        sym_size_sources: dict[sympy.Symbol, tuple[Node, int]] = {}
+
+        for node in self.nodes:
+            val, _ = self._get_tensor_meta_val(node)
+            # SymInt-valued node (placeholder or other sym op): the node
+            # itself is the symbol's producer.
+            if isinstance(val, py_sym_types):
+                expr = val.node.expr
+                if isinstance(expr, sympy.Symbol) and expr not in expr_to_proxy:
+                    expr_to_proxy[expr] = torch.fx.Proxy(node, tracer=tracer)
+                continue
+            # Tensor placeholder: shape symbols don't yet have a dedicated
+            # SymInt-valued node; we'll lazily emit `sym_size.int(ph, dim)`
+            # if any of them are actually referenced by the requested values.
+            if node.op == "placeholder" and isinstance(val, torch.Tensor):
+                for dim, s in enumerate(val.shape):
+                    if isinstance(s, torch.SymInt):
+                        expr = s.node.expr
+                        if isinstance(expr, sympy.Symbol):
+                            sym_size_sources.setdefault(expr, (node, dim))
+
+        # Compute the union of symbols actually referenced by the requested
+        # values; lazily emit `sym_size.int` nodes for any missing ones that
+        # we can recover from a tensor placeholder's shape.
+        needed_symbols: set[sympy.Symbol] = set()
+        for s in values:
+            if isinstance(s, torch.SymInt):
+                needed_symbols.update(s.node.expr.free_symbols)
+        for sym in needed_symbols:
+            if sym in expr_to_proxy or sym not in sym_size_sources:
+                continue
+            ph, dim = sym_size_sources[sym]
+            sym_node = self.call_function(torch.ops.aten.sym_size.int, (ph, dim))
+            tensor, key = self._get_tensor_meta_val(ph)
+            if isinstance(tensor, torch.Tensor):
+                sym_node.meta[key] = tensor.shape[dim]
+            expr_to_proxy[sym] = torch.fx.Proxy(sym_node, tracer=tracer)
+
+        out: list[Node | int] = []
+        for s in values:
+            if not isinstance(s, torch.SymInt):
+                out.append(s)
+                continue
+            target_expr = s.node.expr
+            if target_expr.is_number:
+                out.append(int(s))
+                continue
+            missing = target_expr.free_symbols - expr_to_proxy.keys()
+            if missing:
+                raise AssertionError(
+                    f"materialize_symints: cannot materialize {s!r}; the "
+                    f"following symbols have no producer in the graph: {missing}"
+                )
+            result = sympy_interp(PythonReferenceAnalysis, expr_to_proxy, target_expr)
+            # For a non-constant target_expr we expect a Proxy. (Constants
+            # would have been handled by the `is_number` branch above.)
+            if not isinstance(result, torch.fx.Proxy):
+                raise AssertionError(
+                    f"materialize_symints: expected Proxy for non-constant "
+                    f"expr {target_expr!r}, got {result!r}"
+                )
+            out_node = result.node
+            out_node.meta["val"] = s
+            out.append(out_node)
+        return out
+
+    @compatibility(is_backward_compatible=False)
+    def materialize_symint(self, value: torch.SymInt | int) -> Node | int:
+        """Single-value convenience wrapper around :meth:`materialize_symints`."""
+        return self.materialize_symints([value])[0]
 
     @compatibility(is_backward_compatible=True)
     def node_copy(

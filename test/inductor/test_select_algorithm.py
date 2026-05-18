@@ -889,6 +889,72 @@ class TestDtypeViewAutotuning(TestCase):
         self.assertEqual(captured_results["example_shape"], (m, k))
 
 
+class TestGetInputsStorageSizeCheck(TestCase):
+    @requires_gpu()
+    def test_get_inputs_with_padded_strides(self):
+        """
+        Regression test: call AlgorithmSelectorCache.get_inputs inside a
+        real compilation context with a bf16 IR Buffer whose layout strides
+        are non-contiguous (simulating inplace_padding).  Without the
+        bytes-to-elements fix the as_strided inside get_inputs raises.
+        """
+        from torch._inductor import ir
+
+        device = torch.device(GPU_TYPE)
+        dtype = torch.bfloat16
+        # contiguous size [4, 5, 8] needs 160 elements, but padded
+        # strides [100, 8, 1] need 340 — more than 160 but ≤ 320 bytes.
+        node_size = [4, 5, 8]
+        padded_strides = [100, 8, 1]
+
+        captured_error: list[Exception] = []
+
+        orig_lowering = torch._inductor.lowering.lowerings[aten.add.Tensor]
+
+        def patched_lowering(*args, **kwargs):
+            try:
+                layout = ir.FixedLayout(
+                    device=device,
+                    dtype=dtype,
+                    size=node_size,
+                    stride=padded_strides,
+                )
+                buf = ir.Buffer(name="test_padded_buf", layout=layout)
+
+                out_layout = ir.FixedLayout(
+                    device=device,
+                    dtype=dtype,
+                    size=node_size,
+                    stride=padded_strides,
+                )
+
+                autotune_args = select_algorithm.AlgorithmSelectorCache.get_inputs(
+                    choices=[],
+                    input_nodes=[buf],
+                    layout=out_layout,
+                    input_gen_fns=None,
+                )
+                extern_inputs = autotune_args.extern.input_tensors
+                captured_error.clear()
+                self.assertEqual(len(extern_inputs), 1)
+                self.assertEqual(extern_inputs[0].shape, torch.Size(node_size))
+            except Exception as e:
+                captured_error.append(e)
+
+            return orig_lowering(*args, **kwargs)
+
+        torch._dynamo.reset()
+        with patch.dict(
+            torch._inductor.lowering.lowerings,
+            {aten.add.Tensor: patched_lowering},
+        ):
+            compiled_fn = torch.compile(lambda x: x + 1)
+            compiled_fn(torch.randn(4, device=device))
+
+        if captured_error:
+            raise captured_error[0]
+
+
 class TestTemplateRender(TestCase):
     @requires_gpu()
     @requires_triton()

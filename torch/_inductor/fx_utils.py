@@ -3,6 +3,7 @@ import contextlib
 import operator
 from collections import defaultdict
 from collections.abc import Callable
+from itertools import chain
 from typing import Any
 
 import sympy
@@ -80,16 +81,31 @@ class FakeTensorUpdater:
 
     def __init__(self, graph: torch.fx.Graph) -> None:
         self.processed_hashes = OrderedSet[Any]()
+        self.tracked_node_ids: OrderedSet[int] = OrderedSet()
         self.graph = graph
 
         for node in self.graph.nodes:
             self.processed_hashes.add(self.hash_node(node))
+            self.tracked_node_ids.add(id(node))
 
     def hash_node(self, node: torch.fx.Node):
-        # todo(chilli): Not a great hash function
-        return (node, node.target, id(node.args), id(node.kwargs))
+        def get_hash_or_ids(n_iter):
+            def get_hash_or_id(o):
+                try:
+                    return hash(o)
+                except TypeError:
+                    return id(o)
 
-    def incremental_update(self):
+            return tuple(get_hash_or_id(n) for n in n_iter)
+
+        return (
+            node,
+            node.target,
+            get_hash_or_ids(node.args),
+            get_hash_or_ids(chain.from_iterable(node.kwargs.items())),
+        )
+
+    def incremental_update(self) -> int:
         """Update FakeTensors on self.graph. We will try to do the minimum amount of work."""
         existing_storages: defaultdict[int | None, int] = defaultdict(int)
         for node in self.graph.nodes:
@@ -98,14 +114,25 @@ class FakeTensorUpdater:
         def is_intlist_same(new, old):
             return statically_known_true(sym_eq(new, old))
 
-        def is_fake_tensor_same(new, old, *, node):
+        def is_fake_tensor_same(
+            new,
+            old,
+            *,
+            check_storage: bool = True,
+            node: torch.fx.Node | None = None,
+        ) -> bool:
             if type(new) is not type(old):
                 return False
             if isinstance(new, (list, tuple)):
                 if len(new) != len(old):
                     return False
                 return all(
-                    is_fake_tensor_same(new_i, old_i, node=node)
+                    is_fake_tensor_same(
+                        new_i,
+                        old_i,
+                        check_storage=check_storage,
+                        node=node,
+                    )
                     for new_i, old_i in zip(new, old)
                 )
             if new is None:
@@ -120,17 +147,26 @@ class FakeTensorUpdater:
                     )
                     == sympy.true
                 )
-            if not is_intlist_same(new.shape, old.shape) or new.layout != old.layout:
+            if (
+                new.layout != old.layout
+                or new.dtype != old.dtype
+                or not is_intlist_same(new.shape, old.shape)
+            ):
                 return False
-            if new.layout == torch.strided and (
-                not is_intlist_same(new.stride(), old.stride())
-                or not statically_known_true(
-                    new.storage_offset() == old.storage_offset()
-                )
+            if new.layout == torch.strided and not is_intlist_same(
+                new.stride(), old.stride()
             ):
                 return False
 
             if new.device != old.device:
+                return False
+
+            if not check_storage:
+                return True
+
+            if new.layout == torch.strided and not statically_known_true(
+                new.storage_offset() == old.storage_offset()
+            ):
                 return False
 
             if get_storage(new) == get_storage(old):
@@ -187,6 +223,7 @@ class FakeTensorUpdater:
             if (
                 existing_storages[get_storage(old)] == 1
                 and get_storage(new) not in existing_storages
+                and node is not None
                 and not any_user_may_alias(node)
             ):
                 return True
@@ -206,16 +243,49 @@ class FakeTensorUpdater:
                 is torch._inductor.fx_passes.reinplace._generalized_scatter
             )
 
+        nodes_updated = 0
         to_process = OrderedSet[int]()
+        current_graph_hashes = OrderedSet[Any]()
         for node in self.graph.nodes:
+            node_hash = self.hash_node(node)
+            current_graph_hashes.add(node_hash)
+
+            # Lowering functions consume Inductor IR nodes, not FakeTensors, so
+            # FakeTensorUpdater cannot safely recompute their metadata.
+            if hasattr(node.target, "_inductor_lowering_function") and (
+                node_hash not in self.processed_hashes or id(node) in to_process
+            ):
+                if id(node) in to_process:
+                    raise RuntimeError(
+                        "FakeTensorUpdater cannot recompute metadata for "
+                        "_inductor_lowering_function nodes after their dependencies "
+                        "change because those targets expect Inductor IR inputs rather "
+                        "than FakeTensor inputs. "
+                        f"Encountered node with changed dependency: {node.format_node()}"
+                    )
+                if id(node) in self.tracked_node_ids:
+                    raise RuntimeError(
+                        "FakeTensorUpdater cannot recompute metadata for tracked "
+                        "_inductor_lowering_function nodes after their inputs or "
+                        "dependencies change because those targets expect "
+                        "Inductor IR inputs rather than FakeTensor inputs. "
+                        f"Encountered changed node: {node.format_node()}"
+                    )
+                if "val" not in node.meta:
+                    raise RuntimeError(
+                        "FakeTensorUpdater requires newly inserted "
+                        "_inductor_lowering_function nodes to already carry fake "
+                        "metadata in node.meta['val']. "
+                        f"Encountered new node without metadata: {node.format_node()}"
+                    )
+                self.tracked_node_ids.add(id(node))
+                continue
+
             # NB: Be very careful about skipping nodes (via continues) here
             # and ask for a careful review when changing this code. The
             # consequence for incorrect FakeTensor metadata is difficult-to-debug
             # silent incorrectness.
-            if (
-                self.hash_node(node) in self.processed_hashes
-                and id(node) not in to_process
-            ):
+            if node_hash in self.processed_hashes and id(node) not in to_process:
                 continue
 
             if not should_process_node(node):
@@ -232,9 +302,17 @@ class FakeTensorUpdater:
             ):
                 continue
 
+            storage_only_change = "val" in node.meta and is_fake_tensor_same(
+                new_fake_tensor,
+                node.meta["val"],
+                check_storage=False,
+                node=node,
+            )
+
             rebind_unbacked(V.fake_mode.shape_env, node, new_fake_tensor)
 
             node.meta["val"] = new_fake_tensor
+            nodes_updated += 1
             if (shape_env := V.fake_mode.shape_env) and (
                 symbol_to_path := compute_unbacked_bindings(shape_env, new_fake_tensor)
             ):
@@ -244,9 +322,22 @@ class FakeTensorUpdater:
 
             existing_storages[get_node_storage(node)] += 1
 
-            to_process.update([id(user) for user in node.users])
+            to_process.update(
+                id(user)
+                for user in node.users
+                if not (
+                    storage_only_change
+                    and getattr(
+                        user.target,
+                        "_inductor_lowering_output_metadata_ignores_input_storage",
+                        False,
+                    )
+                )
+            )
 
-            self.processed_hashes.add(self.hash_node(node))
+        self.processed_hashes = current_graph_hashes
+        self.tracked_node_ids = OrderedSet([id(node) for node in self.graph.nodes])
+        return nodes_updated
 
 
 def get_storage(t: torch.Tensor) -> int:

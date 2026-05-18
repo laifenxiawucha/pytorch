@@ -889,9 +889,12 @@ def _do_auto_functionalize_v2_for_generic_mutable_operator(
 
     if isinstance(op, HigherOrderOperator):
         if len(schema.returns) <= 0:
-            raise AssertionError(
-                f"hop is expected to return at least one output {schema}."
-            )
+            from torch._higher_order_ops.while_loop import while_loop_op
+
+            if op is not while_loop_op:
+                raise AssertionError(
+                    f"hop is expected to return at least one output {schema}."
+                )
         if len(unwrapped_actual_out) != len(schema.returns):
             raise AssertionError(
                 f"Expected {len(schema.returns)} outputs, got {len(unwrapped_actual_out)}"

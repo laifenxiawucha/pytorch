@@ -5940,6 +5940,59 @@ def forward(self, arg0_1):
         fn, inp = WHILE_LOOP_TESTS[while_loop_test]
         self._check_compile(fn, inp, backend=backend)
 
+    def _check_empty_carry_mutation(self, device: torch.device) -> None:
+        class M(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.register_buffer("counter", torch.tensor(0, device=device))
+                self.register_buffer("buf", torch.ones(8, device=device))
+
+            def forward(self):
+                def cond_fn():
+                    self.counter.add_(1)
+                    return self.counter < 3
+
+                def body_fn():
+                    self.buf.add_(-1)
+                    return ()
+
+                while_loop(cond_fn, body_fn, ())
+                return self.buf.sum() + self.counter.sum().to(dtype=self.buf.dtype)
+
+        def _assert_state(m: torch.nn.Module, out: torch.Tensor) -> None:
+            self.assertEqual(out.item(), -5.0)
+            self.assertEqual(m.counter.item(), 3)
+            self.assertEqual(
+                m.buf, torch.full((8,), -1.0, device=device, dtype=m.buf.dtype)
+            )
+
+        eager = M()
+        with torch.no_grad():
+            eager_out = eager()
+        _assert_state(eager, eager_out)
+
+        torch._dynamo.reset()
+        mod = M()
+        with torch.no_grad():
+            out = torch.compile(mod, backend="aot_eager", fullgraph=True)()
+        _assert_state(mod, out)
+
+        torch._dynamo.reset()
+        mod_i = M()
+        with torch.no_grad():
+            out_i = torch.compile(mod_i, backend="inductor", fullgraph=True)()
+        _assert_state(mod_i, out_i)
+
+    @skipIfTorchDynamo("Graph is not captured by backend if test with dynamo")
+    @parametrize("device", ["cpu", "cuda"])
+    def test_while_loop_compile_empty_carry_mutation(self, device):
+        if device == "cuda":
+            if not torch.cuda.is_available():
+                self.skipTest("CUDA not available")
+            if not SM70OrLater:
+                self.skipTest("triton")
+        self._check_empty_carry_mutation(torch.device(device))
+
     @skipIfTorchDynamo("Graph is not captured by backend if test with dynamo")
     @skipIfCrossRef  # Arg order changes with cross ref
     def test_while_loop_simple_with_linear_compile_check_graph(self):

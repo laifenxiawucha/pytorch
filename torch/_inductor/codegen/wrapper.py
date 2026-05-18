@@ -4196,14 +4196,30 @@ class PythonWrapperCodegen(CodeGen):
         self.writeline("if not should_loop:")
         if stack_output:
             # Handle the case when loop never executes
-            for i, carried_input in enumerate(outer_carried_inputs):
+            if outer_carried_inputs:
+                for i, carried_input in enumerate(outer_carried_inputs):
+                    self.writeline(
+                        EnterSubgraphLine(self, while_loop.body_subgraph.graph)
+                    )
+                    self.writeline(
+                        f"{name}[{i}] = {carried_input}.unsqueeze(0).clone()"
+                    )
+                    self.writeline(ExitSubgraphLine(self))
+            else:
                 self.writeline(EnterSubgraphLine(self, while_loop.body_subgraph.graph))
-                self.writeline(f"{name}[{i}] = {carried_input}.unsqueeze(0).clone()")
+                self.writeline("pass")
                 self.writeline(ExitSubgraphLine(self))
         else:
-            for i, carried_input in enumerate(outer_carried_inputs):
+            if outer_carried_inputs:
+                for i, carried_input in enumerate(outer_carried_inputs):
+                    self.writeline(
+                        EnterSubgraphLine(self, while_loop.body_subgraph.graph)
+                    )
+                    self.writeline(f"{name}[{i}] = {carried_input}.clone()")
+                    self.writeline(ExitSubgraphLine(self))
+            else:
                 self.writeline(EnterSubgraphLine(self, while_loop.body_subgraph.graph))
-                self.writeline(f"{name}[{i}] = {carried_input}.clone()")
+                self.writeline("pass")
                 self.writeline(ExitSubgraphLine(self))
 
         self.writeline("while should_loop:")
@@ -4217,8 +4233,11 @@ class PythonWrapperCodegen(CodeGen):
         # Collect outputs if enabled
         if stack_output:
             self.writeline(EnterSubgraphLine(self, while_loop.body_subgraph.graph))
-            for i in range(len(outer_carried_inputs)):
-                self.writeline(f"{name}[{i + ckp_offset}].append({name}[{i}])")
+            if outer_carried_inputs:
+                for i in range(len(outer_carried_inputs)):
+                    self.writeline(f"{name}[{i + ckp_offset}].append({name}[{i}])")
+            else:
+                self.writeline("pass")
             self.writeline(ExitSubgraphLine(self))
 
         # Condition check at end of loop

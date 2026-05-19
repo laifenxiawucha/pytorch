@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 import subprocess
+import sysconfig
 import sys
 import zipfile
 from pathlib import Path
@@ -98,6 +99,67 @@ def copy_libraries(torch_dir: Path, libtorch_lib: Path, platform: str) -> None:
             for item in dylibs_dir.iterdir():
                 if item.suffix == ".dylib" and not should_exclude_lib(item.name):
                     shutil.copy2(item, libtorch_lib / item.name)
+
+
+def copy_nvidia_deps(libtorch_lib: Path, platform: str) -> None:
+    """Copy NVIDIA dependency libraries from pip packages into libtorch/lib/.
+
+    The wheel's .so files have RPATH pointing to pip-installed nvidia packages
+    (e.g. $ORIGIN/../../nvidia/nvshmem/lib). For libtorch, we bundle these
+    directly into lib/ and later rewrite RPATH to $ORIGIN.
+    """
+    if platform != "linux":
+        return
+
+    site_packages = Path(sysconfig.get_path("purelib"))
+    nvidia_dir = site_packages / "nvidia"
+    if not nvidia_dir.is_dir():
+        print(
+            f"Warning: {nvidia_dir} not found, skipping NVIDIA dep bundling",
+            file=sys.stderr,
+        )
+        return
+
+    for component_dir in sorted(nvidia_dir.iterdir()):
+        if not component_dir.is_dir():
+            continue
+        lib_dir = component_dir / "lib"
+        if not lib_dir.is_dir():
+            continue
+        for item in lib_dir.iterdir():
+            if not item.is_file():
+                continue
+            if not _is_lib_file(item.name, platform):
+                continue
+            dest = libtorch_lib / item.name
+            if not dest.exists():
+                shutil.copy2(item, dest)
+                print(f"  Copied nvidia dep: {component_dir.name}/lib/{item.name}")
+
+
+def fix_rpath(libtorch_lib: Path, platform: str) -> None:
+    """Rewrite RPATH on all shared libraries to $ORIGIN.
+
+    The wheel sets RPATH relative to the pip site-packages layout. After
+    bundling all deps into a flat lib/ directory, every .so just needs
+    $ORIGIN to find its siblings.
+    """
+    if platform != "linux":
+        return
+
+    patchelf = shutil.which("patchelf")
+    if patchelf is None:
+        print(
+            "Warning: patchelf not found, skipping RPATH fix", file=sys.stderr
+        )
+        return
+
+    for item in libtorch_lib.iterdir():
+        if item.is_file() and ".so" in item.name:
+            subprocess.run(
+                [patchelf, "--set-rpath", "$ORIGIN", "--force-rpath", str(item)],
+                check=False,
+            )
 
 
 def copy_includes(torch_dir: Path, libtorch_include: Path) -> None:
@@ -306,6 +368,9 @@ def main() -> None:
 
         # Copy components
         copy_libraries(torch_dir, libtorch_dir / "lib", args.platform)
+        if "with-deps" in args.libtorch_variant and "without" not in args.libtorch_variant:
+            copy_nvidia_deps(libtorch_dir / "lib", args.platform)
+        fix_rpath(libtorch_dir / "lib", args.platform)
         copy_includes(torch_dir, libtorch_dir / "include")
         copy_cmake(torch_dir, libtorch_dir / "share")
         copy_bin(torch_dir, libtorch_dir / "bin", args.platform)

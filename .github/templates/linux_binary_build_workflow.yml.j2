@@ -236,6 +236,14 @@ jobs:
         with:
           name: !{{ lt_config["source_wheel_build_name"] }}
           path: "${{ runner.temp }}/wheel_artifact/"
+      {%- if lt_config["pytorch_extra_install_requirements"]|d('')|length > 0 and "without" not in lt_config["libtorch_variant"] %}
+      - name: Install NVIDIA dependencies and patchelf
+        run: |
+          set -eux
+          pip3 install patchelf
+          REQUIREMENTS="!{{ lt_config["pytorch_extra_install_requirements"] }}"
+          pip3 install ${REQUIREMENTS//|/ }
+      {%- endif %}
       - name: Extract libtorch from wheel
         run: |
           set -eux

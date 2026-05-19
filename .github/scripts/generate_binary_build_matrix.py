@@ -494,6 +494,9 @@ def generate_libtorch_extraction_configs(
                 "desired_cuda": desired_cuda,
                 "gpu_arch_type": gpu_arch_type,
                 "gpu_arch_version": gpu_arch_version,
+                "pytorch_extra_install_requirements": source_config.get(
+                    "pytorch_extra_install_requirements", ""
+                ),
             }
         )
 

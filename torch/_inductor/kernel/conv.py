@@ -624,7 +624,9 @@ def convolution(
         and V.graph.sizevars.statically_known_equals(in_chan * groups, x.get_size()[1])  # type: ignore[arg-type]
     ):
         if (
-            is_ones(kernel_shape)
+            # conv1x1_via_mm is a Python extern helper without C++ wrapper codegen.
+            not V.graph.cpp_wrapper
+            and is_ones(kernel_shape)
             and is_ones(stride)
             and is_zeros(padding)
             and groups == 1

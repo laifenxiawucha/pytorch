@@ -3303,6 +3303,37 @@ class CommonTemplate:
 
         self.common(fn, (torch.zeros(5, dtype=torch.int64),), check_lowp=False)
 
+    def test_arange8(self):
+        # int64 arange used to produce values whose intermediate
+        # arithmetic exceeds INT32_MAX. Triton must compute in int64.
+        def fn(x):
+            idx = torch.arange(0, 2, device=x.device, dtype=torch.int64)
+            large_val = torch.tensor(2147483648, dtype=torch.int64, device=x.device)
+            return idx * large_val + x
+
+        self.common(fn, (torch.zeros(2, device=self.device),))
+
+    @xfail_if_triton_cpu
+    def test_arange9(self):
+        # int64 arange used inside a reduction: reduction must accumulate
+        # at int64 precision even though each per-element value fits int32.
+        def fn(x):
+            idx = torch.arange(0, 100, device=x.device, dtype=torch.int64)
+            return (idx * int(1e7)).sum()
+
+        self.common(fn, (torch.zeros(1, device=self.device),))
+
+    def test_arange10(self):
+        # The same arange may be used both as an index and as a value. The
+        # index path should keep index_expr narrowing, while the value path
+        # must be split to value_expr so large int arithmetic does not
+        # overflow int32 before the final float cast.
+        def fn(x):
+            idx = torch.arange(0, 2, device=x.device, dtype=torch.int64)
+            return x[idx] + idx * 2147483648
+
+        self.common(fn, (torch.ones(2, device=self.device),))
+
     def test_linspace1(self):
         def fn(x):
             return torch.linspace(0.125, 0.875, 7, device=x.device) + x
@@ -5019,6 +5050,9 @@ class CommonTemplate:
         [subtest(False), subtest(True, decorators=[skip_if_not_triton])],
     )
     def test_low_memory_max_pool(self, dilation: int, dim: int, use_block_ptr: bool):
+        if config.cpp_wrapper and use_block_ptr:
+            raise unittest.SkipTest("block pointer variant times out under cpp_wrapper")
+
         prims = torch.ops.prims
 
         def fn(x):
@@ -17356,6 +17390,32 @@ if RUN_GPU:
             inps = [torch.randn(2, 4, 16, 16, device=GPU_TYPE)]
             code = run_and_get_triton_code(fn_opt, *inps)
             self.assertTrue("to(tl.int32)" in code)
+            self.assertFalse("to(tl.int64)" in code)
+
+            self.assertEqual(fn_opt(*inps), fn(*inps))
+
+        def test_index_expr_pure_indexing_no_int64(self):
+            def fn(x: torch.Tensor) -> torch.Tensor:
+                idx = torch.arange(0, 128, device=GPU_TYPE, dtype=torch.int64)
+                return x[(idx * 2) % 128]
+
+            fn_opt = torch.compile(fn, backend="inductor")
+            inps = [torch.randn(128, device=GPU_TYPE)]
+            code = run_and_get_triton_code(fn_opt, *inps)
+            self.assertFalse("to(tl.int64)" in code)
+
+            self.assertEqual(fn_opt(*inps), fn(*inps))
+
+        def test_searchsorted_boundary_index_no_int64_cast(self):
+            def fn(boundaries: torch.Tensor, values: torch.Tensor) -> torch.Tensor:
+                return torch.searchsorted(boundaries, values, out_int32=False)
+
+            fn_opt = torch.compile(fn, backend="inductor")
+            inps = [
+                torch.tensor([[0.0, 1.0, 2.0], [0.0, 1.0, 2.0]], device=GPU_TYPE),
+                torch.tensor([[0.1, 0.5], [1.5, 2.5]], device=GPU_TYPE),
+            ]
+            code = run_and_get_triton_code(fn_opt, *inps)
             self.assertFalse("to(tl.int64)" in code)
 
             self.assertEqual(fn_opt(*inps), fn(*inps))

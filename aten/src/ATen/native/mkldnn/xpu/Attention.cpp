@@ -64,7 +64,7 @@ bool can_use_overrideable_attention(sdp::sdp_params const& params, bool debug) {
       sdp::check_batch_size_and_num_heads_dense<true /*supports GQA*/>,
       sdp::check_attn_mask_shape,
       sdp::check_nonzero_sequence_lengths_dense,
-      sdp::check_last_dim_stride_equals_1_dense<false /*ignore_singleton_dim*/>,
+      sdp::check_last_dim_stride_equals_1_dense<true /*ignore_singleton_dim*/>,
       check_head_dim_size_xpu,
       check_no_grad);
   for (auto& constraint : constraints) {

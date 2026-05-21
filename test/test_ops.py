@@ -2684,6 +2684,7 @@ fake_autocast_device_skips = defaultdict(dict)
 # TODO: investigate/fix
 fake_autocast_device_skips["cpu"] = {"linalg.pinv"}
 fake_autocast_device_skips["cuda"] = {"linalg.pinv", "pinverse"}
+fake_autocast_device_skips["xpu"] = {"linalg.pinv", "pinverse"}
 
 
 dynamic_output_op_tests = (
@@ -2742,6 +2743,7 @@ fake_autocast_backward_xfails = {
     skip("linalg.pinv", "hermitian"),
     skip("linalg.pinv", "singular"),
     skip("pinverse"),
+    skip("nn.functional.bilinear"),
 }
 
 

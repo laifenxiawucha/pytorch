@@ -10226,10 +10226,9 @@ scipy_lobpcg  | {eq_err_scipy:10.2e}  | {eq_err_general_scipy:10.2e}  | {iters2:
         for shape, batch, nrhs, hermitian in itertools.product(shapes, batches, nrhss, hermitians):
             run_test(shape, batch, nrhs, hermitian)
 
-    @onlyCPU
     @skipCPUIfNoLapack
     @dtypes(*floating_and_complex_types())
-    def test_ldl_solve_cpu_errors(self, device, dtype):
+    def test_ldl_solve_errors(self, device, dtype):
         # Regression test for https://github.com/pytorch/pytorch/issues/163450:
         # malformed pivots used to be passed straight to Lapack SYTRS which
         # would write past the end of the matrix and corrupt the heap; they

@@ -66,6 +66,10 @@ def _promote_type_fft(
     if not dtype.is_floating_point:
         dtype = torch.get_default_dtype()
 
+    # XPU has no native half-precision FFT kernel; promote to float32
+    if device.type == "xpu" and dtype in (torch.float16, torch.bfloat16):
+        dtype = torch.float32
+
     allowed_types = [torch.float32, torch.float64]
     maybe_support_half = device.type in ["cuda", "meta", "xpu"]
 

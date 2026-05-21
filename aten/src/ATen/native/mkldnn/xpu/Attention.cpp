@@ -25,6 +25,32 @@ bool check_head_dim_size_xpu(sdp::sdp_params const& params, bool debug) {
     return false;
   }
 
+  // oneDNN SDPA requires a minimum head_dim for internal kernel tiling.
+  // head_dim < 32 for fp32 / head_dim < 16 for fp16/bf16 can trigger
+  // GPU page faults inside the oneDNN MatMul kernel (MFDNN-14479).
+  // Reference: intel/torch-xpu-ops#3394 — crash still occur in sdpa
+  // with head_dim=16 fp32 at long sequence lengths.
+  const bool is_half = (params.query.dtype() == at::kHalf) ||
+      (params.query.dtype() == at::kBFloat16);
+  constexpr int64_t MIN_HEAD_DIM_FP32 = 32;
+  constexpr int64_t MIN_HEAD_DIM_FP16 = 16;
+  const int64_t min_head_dim =
+      is_half ? MIN_HEAD_DIM_FP16 : MIN_HEAD_DIM_FP32;
+  const auto query_size_last_int = query_size_last.guard_int(__FILE__, __LINE__);
+  if (query_size_last_int < min_head_dim) {
+    if (debug) {
+      TORCH_WARN(
+          "OneDNN attention requires head dimension >= ",
+          min_head_dim,
+          " for ",
+          params.query.dtype(),
+          ". Got ",
+          query_size_last,
+          " instead.");
+    }
+    return false;
+  }
+
   constexpr int MAX_HEAD_DIM = 576;
   const auto max_size_last = query_size_last.max(value_size_last);
   if (max_size_last > MAX_HEAD_DIM) {

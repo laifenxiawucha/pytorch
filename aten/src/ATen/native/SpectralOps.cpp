@@ -79,6 +79,11 @@ ScalarType promote_type_fft(ScalarType type, bool require_complex, Device device
     type = c10::typeMetaToScalarType(c10::get_default_dtype());
   }
 
+  // XPU has no native half-precision FFT kernel; promote to float32
+  if (device.is_xpu() && (type == kHalf || type == kBFloat16)) {
+    type = kFloat;
+  }
+
   const bool maybe_support_half = (
     // CUDA and XPU support half precision, but since meta tensors don't have a
     // device we err on the side of accepting it

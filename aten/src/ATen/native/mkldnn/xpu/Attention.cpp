@@ -182,9 +182,24 @@ sdp::SDPBackend select_sdp_backend_xpu(sdp::sdp_params const& kernel_params) {
   // 1. Flash Attention
   // 2. Math fallback
   auto& ctx = at::globalContext();
+
+  // XPU OneDNN-based backends (overrideable) do not support backward.
+  // When any input requires grad and autograd is enabled, the math
+  // backend must remain available as the only backward-capable fallback
+  // even if the user has restricted the set of enabled backends.
+  const bool any_inputs_require_grad = kernel_params.query.requires_grad() ||
+      kernel_params.key.requires_grad() ||
+      kernel_params.value.requires_grad();
+  const bool gradmode_enabled = at::GradMode::is_enabled();
+  const bool needs_grad = any_inputs_require_grad && gradmode_enabled;
+
   // use overridable linked to onednn as overridable implementation
   if (!ctx.userEnabledMathSDP() && !ctx.userEnabledOverrideableSDP() &&
       !ctx.userEnabledFlashSDP() && !ctx.userEnabledMemEfficientSDP()) {
+    // Math is always allowed when grad is needed (only backend with backward).
+    if (needs_grad) {
+      return sdp::SDPBackend::math;
+    }
     return sdp::SDPBackend::error;
   }
 
@@ -203,7 +218,9 @@ sdp::SDPBackend select_sdp_backend_xpu(sdp::sdp_params const& kernel_params) {
         }
         break;
       case sdp::SDPBackend::math:
-        if (ctx.userEnabledMathSDP()) {
+        // Allow math when grad is required even if not explicitly enabled,
+        // since no XPU-specific backend reliably supports backward.
+        if (ctx.userEnabledMathSDP() || needs_grad) {
           return sdp::SDPBackend::math;
         }
         break;
@@ -236,6 +253,13 @@ sdp::SDPBackend select_sdp_backend_xpu(sdp::sdp_params const& kernel_params) {
   // 2. The user has explicitly disabled the math kernel
   // We then re-run the kernel checks with debug enabled to print out the
   // reason why the kernel was not selected
+
+  // Final fallback: math backend always supports autograd, so when grad
+  // is required and no other backend sufficed, fall back to math instead
+  // of aborting with "No available kernel".
+  if (needs_grad) {
+    return sdp::SDPBackend::math;
+  }
 
   print_debug = true;
   TORCH_WARN("Flash attention kernel not used because:");

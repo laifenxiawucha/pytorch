@@ -1401,6 +1401,56 @@ class TestConvolutionNNDeviceType(NNTestCase):
         ):
             self.assertTrue(torch.backends.mkldnn.allow_tf32)
 
+    @onlyXPU
+    @dtypes(torch.float16, torch.bfloat16, torch.float32, torch.float64)
+    def test_conv3d_backward_nondense_strides(self, device, dtype):
+        def _make_inputs(seed=0):
+            torch.manual_seed(seed)
+            inp = torch.randn(1, 1, 4, 4, 4, device=device, dtype=dtype)
+            wgt = torch.randn(1, 1, 4, 4, 4, device=device, dtype=dtype)
+            bias = torch.randn(1, device=device, dtype=dtype)
+            cot = torch.randn(1, 1, 1, 1, 1, device=device, dtype=dtype)
+            return inp, wgt, bias, cot
+
+        def _batch_last(tensor, batch_size):
+            return tensor.unsqueeze(-1).expand(*tensor.shape, batch_size).contiguous()
+
+        batch_size = 2
+        inp, wgt, bias, cot = _make_inputs()
+
+        def conv_fn(inp, wgt, bias):
+            return F.conv3d(inp, wgt, bias, stride=(2, 2, 2))
+
+        def vjp_fn(inp, wgt, bias, cot):
+            _, back = torch.func.vjp(conv_fn, inp, wgt, bias)
+            return back(cot)
+
+        batched_inp = _batch_last(inp, batch_size)
+        batched_wgt = _batch_last(wgt, batch_size)
+        batched_bias = _batch_last(bias, batch_size)
+        batched_cot = _batch_last(cot, batch_size)
+
+        loop_out = [
+            vjp_fn(
+                batched_inp[..., i],
+                batched_wgt[..., i],
+                batched_bias[..., i],
+                batched_cot[..., i],
+            )
+            for i in range(batch_size)
+        ]
+        loop_grad_inp = torch.stack([g[0] for g in loop_out])
+        loop_grad_wgt = torch.stack([g[1] for g in loop_out])
+        loop_grad_bias = torch.stack([g[2] for g in loop_out])
+
+        vmap_grad_inp, vmap_grad_wgt, vmap_grad_bias = torch.func.vmap(
+            vjp_fn, in_dims=(-1, -1, -1, -1)
+        )(batched_inp, batched_wgt, batched_bias, batched_cot)
+
+        torch.testing.assert_close(vmap_grad_inp, loop_grad_inp)
+        torch.testing.assert_close(vmap_grad_wgt, loop_grad_wgt)
+        torch.testing.assert_close(vmap_grad_bias, loop_grad_bias)
+
 
 instantiate_device_type_tests(
     TestConvolutionNNDeviceType, globals(), only_for="xpu", allow_xpu=True

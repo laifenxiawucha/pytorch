@@ -74,6 +74,12 @@ def _sycl_arch_as_compile_option() -> str:
 
 
 def _sycl_compiler_options() -> list[str]:
+    import torch
+
+    spirv_exts = "+SPV_INTEL_split_barrier,+SPV_INTEL_2d_block_io"
+    if torch.xpu.get_device_properties().has_subgroup_matrix_multiply_accumulate:
+        spirv_exts += ",+SPV_INTEL_subgroup_matrix_multiply_accumulate"
+
     options = [
         "-DCUTLASS_ENABLE_SYCL",
         "-DSYCL_INTEL_TARGET",
@@ -85,7 +91,7 @@ def _sycl_compiler_options() -> list[str]:
         "-fsycl",
         f"-fsycl-targets={_sycl_arch_as_compile_option()}",
         "-Xspirv-translator",
-        "-spirv-ext=+SPV_INTEL_split_barrier,+SPV_INTEL_2d_block_io,+SPV_INTEL_subgroup_matrix_multiply_accumulate",
+        f"-spirv-ext={spirv_exts}",
         "-fno-sycl-instrument-device-code",
         "-DMKL_ILP64",
         "-MD",

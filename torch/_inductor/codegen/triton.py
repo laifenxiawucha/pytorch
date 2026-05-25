@@ -3039,6 +3039,9 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
         self.fixed_config = fixed_config
         self.is_combo_kernel: bool = is_combo_kernel
         super().__init__(tiling, **kwargs)
+        # Block pointers are not supported on XPU Triton backend
+        if V.graph.get_current_device_or_throw().type == "xpu":
+            self.allow_block_ptr = False
         self.cse = TritonCSE(self.newvar_prefix, self.suffix)
         # Cache of values that can be reused for the prologue.
         self.prologue_cache: dict[str, str] = {}

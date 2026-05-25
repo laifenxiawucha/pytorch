@@ -2197,22 +2197,43 @@ class CUDARngStateHelper:
     def get_torch_state_as_tuple(
         fake_mode: AbstractContextManager[Any] = nullcontext(),
     ):
-        if not torch.cuda.is_available():
+        if torch.cuda.is_available():
+            with fake_mode:
+                seed = torch.tensor(torch.cuda.initial_seed())
+                offset = torch.tensor(torch.cuda._get_rng_state_offset())
+                return seed, offset
+        elif torch.xpu.is_available():
+            with fake_mode:
+                seed = torch.tensor(torch.xpu.initial_seed())
+                offset = torch.tensor(torch.xpu._get_rng_state_offset())
+                return seed, offset
+        else:
             raise RuntimeError("CUDA not available")
 
-        with fake_mode:
-            seed = torch.tensor(torch.cuda.initial_seed())
-            offset = torch.tensor(torch.cuda._get_rng_state_offset())
-            return seed, offset
-
     @staticmethod
-    def set_torch_state_tensor(seed, offset):
+    def set_torch_state_tensor(seed, offset, device=None):
         # Rng state is [64-bit seed, 64-bit offset]
         seed_portion = seed.reshape([1]).view(torch.uint8)
         offset_portion = offset.reshape([1]).view(torch.uint8)
         new_state = torch.cat([seed_portion, offset_portion])
-        torch.cuda.set_rng_state(new_state)
+        device_type = device.type if device is not None else None
+        if device_type == "xpu" or (
+            device_type is None
+            and torch.xpu.is_available()
+            and not torch.cuda.is_available()
+        ):
+            torch.xpu.set_rng_state(new_state)
+        else:
+            torch.cuda.set_rng_state(new_state)
 
     @staticmethod
-    def set_new_offset(relative_offset):
-        torch.cuda._set_rng_state_offset(relative_offset.item())
+    def set_new_offset(relative_offset, device=None):
+        device_type = device.type if device is not None else None
+        if device_type == "xpu" or (
+            device_type is None
+            and torch.xpu.is_available()
+            and not torch.cuda.is_available()
+        ):
+            torch.xpu._set_rng_state_offset(relative_offset.item())
+        else:
+            torch.cuda._set_rng_state_offset(relative_offset.item())

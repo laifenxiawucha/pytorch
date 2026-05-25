@@ -564,6 +564,8 @@ def create_functionalized_rng_ops_wrapper(
         with (
             patch("torch.cuda.get_rng_state", override_get_rng_state),
             patch("torch.cuda.set_rng_state", override_set_rng_state),
+            patch("torch.xpu.get_rng_state", override_get_rng_state),
+            patch("torch.xpu.set_rng_state", override_set_rng_state),
         ):
             return append_rng_offsets(*func(primals, tangents))
 
@@ -572,6 +574,8 @@ def create_functionalized_rng_ops_wrapper(
         with (
             patch("torch.cuda.get_rng_state", override_get_rng_state),
             patch("torch.cuda.set_rng_state", override_set_rng_state),
+            patch("torch.xpu.get_rng_state", override_get_rng_state),
+            patch("torch.xpu.set_rng_state", override_set_rng_state),
         ):
             return append_rng_offsets(*func(*primals_fwd_seed_fwd_base_offset[:-2]))
 

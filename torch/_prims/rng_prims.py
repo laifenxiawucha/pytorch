@@ -56,6 +56,7 @@ def philox_rand_offset_meta(
 
 def philox_rand_offset(
     shape: torch.Size,
+    device=None,
 ):
     # For impl, look at the function calc_execution_policy in the file
     # aten/src/ATen/native/cuda/DistributionTemplates.h. The impl was copied at
@@ -68,11 +69,19 @@ def philox_rand_offset(
     block_size = 256
     unroll = 4
     curand4_engine_calls = 4
-    device_property = torch.cuda.get_device_properties(torch.cuda.current_device())
-    blocks_per_sm = device_property.max_threads_per_multi_processor // block_size
+    device_type = device.type if device is not None else "cuda"
+    if device_type == "xpu":
+        device_property = torch.xpu.get_device_properties(torch.xpu.current_device())
+        max_threads = device_property.max_work_group_size
+        num_sms = device_property.max_compute_units
+    else:
+        device_property = torch.cuda.get_device_properties(torch.cuda.current_device())
+        max_threads = device_property.max_threads_per_multi_processor
+        num_sms = device_property.multi_processor_count
+    blocks_per_sm = max_threads // block_size
     num = cast(int, numel)
     grid_size = (num + block_size - 1) // block_size
-    grid_size = min(grid_size, device_property.multi_processor_count * blocks_per_sm)
+    grid_size = min(grid_size, num_sms * blocks_per_sm)
     return ((num - 1) // (block_size * grid_size * unroll) + 1) * curand4_engine_calls
 
 
@@ -114,14 +123,14 @@ def register_philox_rand():
         else:
             devices = [device]
 
-        if device.type != "cuda":
+        if device.type not in ("cuda", "xpu"):
             raise throw_on_non_cuda(device)
 
-        with torch.random.fork_rng(devices):
-            CUDARngStateHelper.set_torch_state_tensor(seed, offset)
+        with torch.random.fork_rng(devices, device_type=device.type):
+            CUDARngStateHelper.set_torch_state_tensor(seed, offset, device)
             random_values = torch.rand(shape, device=device, dtype=dtype)
 
-        return random_values, philox_rand_offset(shape)
+        return random_values, philox_rand_offset(shape, device)
 
     register_rng_prim(
         name=name,

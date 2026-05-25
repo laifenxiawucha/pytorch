@@ -31,7 +31,7 @@ def throw_on_non_cuda(device):
 # ops like dropout which have fused implementation and can hide the rand inside.
 @register_rng_decomposition(aten.rand)
 def rand(shape, dtype=None, layout=torch.strided, device=None, pin_memory=False):
-    if device and device.type != "cuda":
+    if device and device.type not in ("cuda", "xpu"):
         throw_on_non_cuda(device)
     seed, offset = PhiloxStateTracker.get_state_as_tuple()
     dtype = dtype or torch.float32
@@ -52,7 +52,7 @@ def rand_like(
     memory_format=torch.preserve_format,
 ):
     device = device or x.device
-    if device.type != "cuda":
+    if device.type not in ("cuda", "xpu"):
         throw_on_non_cuda(device)
     dtype = dtype or x.dtype
     seed, offset = PhiloxStateTracker.get_state_as_tuple()

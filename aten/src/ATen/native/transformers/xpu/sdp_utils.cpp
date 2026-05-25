@@ -105,13 +105,17 @@ inline bool check_flash_attention_head_dim_size(
     return false;
   }
 
+  const auto min_supported_headdim = c10::SymInt(64);
   const auto max_supported_headdim = c10::SymInt(192);
-  if (query_size_last > max_supported_headdim) {
+  if (query_size_last < min_supported_headdim ||
+      query_size_last > max_supported_headdim) {
     if (debug) {
       TORCH_WARN(
-          "FlashAttentionXPU supports head dimension up to ",
+          "FlashAttentionXPU supports head dimension in range [",
+          min_supported_headdim,
+          ", ",
           max_supported_headdim,
-          ". ",
+          "]. ",
           "Got head dimension: ",
           query_size_last,
           " instead.");

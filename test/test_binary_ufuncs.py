@@ -2772,7 +2772,6 @@ class TestBinaryUfuncs(TestCase):
 
     @onlyNativeDeviceTypes  # Check Issue https://github.com/pytorch/pytorch/issues/48130
     @dtypes(*integral_types())
-    @dtypesIfXPU(*set(integral_types()) - {torch.int64})
     def test_fmod_remainder_by_zero_integral(self, device, dtype):
         fn_list = (torch.fmod, torch.remainder)
         for fn in fn_list:
@@ -2786,6 +2785,10 @@ class TestBinaryUfuncs(TestCase):
             elif torch.version.hip is not None:
                 # ROCm behavior: x % 0 is a no-op; x is returned
                 self.assertEqual(fn(x, zero), x)
+            elif self.device_type == "xpu":
+                # XPU behavior: x % 0 returns all 1s (0xFF...FF) as an undefined behavior
+                value = 255 if dtype == torch.uint8 else -1
+                self.assertTrue(torch.all(fn(x, zero) == value))
             else:
                 # CUDA behavior: Different value for different dtype
                 # Due to it's an undefined behavior, CUDA returns a pattern of all 1s

@@ -180,9 +180,35 @@ sycl::event matmul(
   dnnl::matmul::primitive_desc matmul_pd;
 
   // STEP1: create memory desc
-  m1_md = dnnl::memory::desc(m1_dims, m1_dt, m1_strides);
-  m2_md = dnnl::memory::desc(m2_dims, m2_dt, m2_strides);
-  dst_md = dnnl::memory::desc(dst_dims, dst_dt, dst_strides);
+  // Use allow_empty=true to avoid throwing on invalid strides (e.g. after
+  // permute+reshape). If any descriptor fails, fall back to contiguous.
+  m1_md = dnnl::memory::desc(m1_dims, m1_dt, m1_strides, /*allow_empty=*/true);
+  m2_md = dnnl::memory::desc(m2_dims, m2_dt, m2_strides, /*allow_empty=*/true);
+  dst_md =
+      dnnl::memory::desc(dst_dims, dst_dt, dst_strides, /*allow_empty=*/true);
+  if (!m1_md || !m2_md || !dst_md) {
+    m1 = m1.contiguous();
+    m2 = m2.contiguous();
+    dst = dst.contiguous();
+    m1_strides = (dims == 2) ? dnnl::memory::dims({m1.stride(0), m1.stride(1)})
+                             : dnnl::memory::dims(
+                                   {m1.stride(0), m1.stride(1), m1.stride(2)});
+    if (dims == 2) {
+      m2_strides = m2_trans
+          ? dnnl::memory::dims({m2.stride(0), m2.stride(1)})
+          : dnnl::memory::dims({m2.stride(1), m2.stride(0)});
+    } else {
+      m2_strides = m2_trans
+          ? dnnl::memory::dims({m2.stride(0), m2.stride(1), m2.stride(2)})
+          : dnnl::memory::dims({m2.stride(0), m2.stride(2), m2.stride(1)});
+    }
+    dst_strides = (dims == 2)
+        ? dnnl::memory::dims({dst.stride(0), dst.stride(1)})
+        : dnnl::memory::dims({dst.stride(0), dst.stride(1), dst.stride(2)});
+    m1_md = dnnl::memory::desc(m1_dims, m1_dt, m1_strides);
+    m2_md = dnnl::memory::desc(m2_dims, m2_dt, m2_strides);
+    dst_md = dnnl::memory::desc(dst_dims, dst_dt, dst_strides);
+  }
 
   // STEP2: creat attribute
   dnnl::primitive_attr pattr;

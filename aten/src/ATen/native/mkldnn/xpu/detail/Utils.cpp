@@ -144,8 +144,10 @@ bool onednn_strides_check(const Tensor& src) {
   auto strides = strides_info.empty() ? nullptr : &strides_info[0];
 
   dnnl_memory_desc_t md;
-  dnnl_memory_desc_create_with_strides(
+  dnnl_status_t status = dnnl_memory_desc_create_with_strides(
       &md, ndims, adims.data(), data_type, strides);
+  if (status != dnnl_success)
+    return false;
   dnnl_format_kind_t md_fmt_kind;
   int md_ndims = 0;
   int md_inner_nblks = 0;

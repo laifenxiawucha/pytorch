@@ -5518,8 +5518,10 @@ def linspace(
         return torch.full((0,), 0, dtype=dtype, **factory_kwargs)  # type: ignore[arg-type]
     if steps == 1:
         if isinstance(start, TensorLikeType):
-            empty_tensor = torch.empty((steps,), dtype=dtype, **factory_kwargs)  # type: ignore[arg-type]
-            return torch.ops.aten.copy.default(empty_tensor, start)
+            result = _maybe_convert_to_dtype(start, dtype).reshape((1,))
+            if requires_grad:
+                result.requires_grad_(True)
+            return result
         else:
             return torch.full((steps,), start, dtype=dtype, **factory_kwargs)  # type: ignore[arg-type]
 

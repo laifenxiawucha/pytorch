@@ -9373,7 +9373,7 @@ class Scheduler:
             self.available_buffer_names.update(node.get_buffer_names())
             self.completed_operations.update(node.get_operation_names())
 
-            if not isinstance(node, NopKernelSchedulerNode):
+            if not isinstance(node, (NopKernelSchedulerNode, ExternKernelSchedulerNode)):
                 device = node.get_device()
                 if (
                     device is not None

@@ -976,14 +976,14 @@ static void toggleTorchOpCollectionDynamic(bool enable) {
 }
 
 void togglePythonCollectionDynamic(const bool enable) {
-  auto state_ptr = ProfilerStateBase::get();
+  auto state_ptr = ProfilerStateBase::getGlobal();
   if (!state_ptr || state_ptr->profilerType() != ActiveProfilerType::KINETO ||
       !state_ptr->config().with_stack) {
     return;
   }
 
   KinetoThreadLocalState* kineto_thread_local_state_ptr =
-      static_cast<KinetoThreadLocalState*>(state_ptr);
+      static_cast<KinetoThreadLocalState*>(state_ptr.get());
 
   if (enable) {
     kineto_thread_local_state_ptr->resumePython();

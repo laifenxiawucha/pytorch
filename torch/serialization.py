@@ -12,6 +12,7 @@ import sys
 import tarfile
 import tempfile
 import threading
+import urllib.parse
 import warnings
 from collections.abc import Callable
 from contextlib import closing, contextmanager
@@ -830,8 +831,9 @@ class _open_zipfile_writer_file(_opener[torch._C.PyTorchFileWriter]):
                 )
             )
 
-    def __exit__(self, *args) -> None:
-        self.file_like.write_end_of_file()
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        if exc_type is None:
+            self.file_like.write_end_of_file()
         if self.file_stream is not None:
             self.file_stream.close()
 
@@ -850,9 +852,10 @@ class _open_zipfile_writer_buffer(_opener[torch._C.PyTorchFileWriter]):
             )
         )
 
-    def __exit__(self, *args) -> None:
-        self.file_like.write_end_of_file()
-        self.buffer.flush()
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        if exc_type is None:
+            self.file_like.write_end_of_file()
+            self.buffer.flush()
 
 
 def _open_zipfile_writer(name_or_buffer: str | IO[bytes]) -> _opener:
@@ -933,6 +936,36 @@ def _check_dill_version(pickle_module) -> None:
             )
 
 
+def _is_local_path(path: str) -> bool:
+    parsed = urllib.parse.urlparse(path)
+    scheme = parsed.scheme
+    if scheme and not (len(scheme) == 1 and scheme.isalpha() and not parsed.netloc):
+        return False
+    drive = os.path.splitdrive(path)[0]
+    return not drive.startswith(("/", "\\"))
+
+
+def _save_via_tmp(path: str, opener, writer) -> None:
+    dir_name = os.path.dirname(os.path.abspath(path))
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=dir_name)
+    ctx = None
+    try:
+        os.close(tmp_fd)
+        with opener(tmp_path) as ctx:
+            writer(ctx)
+        del ctx
+        os.replace(tmp_path, path)
+        tmp_path = None
+    except BaseException:
+        del ctx
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        raise
+
+
 def _check_save_filelike(f):
     if not _is_path(f) and not hasattr(f, "write"):
         raise AttributeError(
@@ -999,23 +1032,39 @@ def save(
         f = os.fspath(f)
 
     if _use_new_zipfile_serialization:
-        with _open_zipfile_writer(f) as opened_zipfile:
-            _save(
-                obj,
-                opened_zipfile,
-                pickle_module,
-                pickle_protocol,
-                _disable_byteorder_record,
+        if isinstance(f, str) and _is_local_path(f):
+            _save_via_tmp(
+                f,
+                _open_zipfile_writer,
+                lambda zip_file: _save(
+                    obj, zip_file, pickle_module, pickle_protocol, _disable_byteorder_record
+                ),
             )
-            return
+        else:
+            with _open_zipfile_writer(f) as opened_zipfile:
+                _save(
+                    obj,
+                    opened_zipfile,
+                    pickle_module,
+                    pickle_protocol,
+                    _disable_byteorder_record,
+                )
+        return
     else:
         global _serialization_tls
         if _serialization_tls.skip_data:
             raise RuntimeError(
                 "Cannot use skip_data=True with _use_new_zipfile_serialization=False"
             )
-        with _open_file_like(f, "wb") as opened_file:
-            _legacy_save(obj, opened_file, pickle_module, pickle_protocol)
+        if isinstance(f, str) and _is_local_path(f):
+            _save_via_tmp(
+                f,
+                lambda tmp: _open_file_like(tmp, "wb"),
+                lambda fh: _legacy_save(obj, fh, pickle_module, pickle_protocol),
+            )
+        else:
+            with _open_file_like(f, "wb") as opened_file:
+                _legacy_save(obj, opened_file, pickle_module, pickle_protocol)
 
 
 def _legacy_save(obj, f, pickle_module, pickle_protocol) -> None:

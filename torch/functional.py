@@ -1,6 +1,8 @@
 # mypy: allow-untyped-defs
 import itertools
+import math
 import operator
+import warnings
 from collections.abc import Sequence
 from typing import Any, TYPE_CHECKING
 
@@ -1531,6 +1533,16 @@ def cdist(x1, x2, p=2.0, compute_mode="use_mm_for_euclid_dist_if_necessary"):
         return handle_torch_function(
             cdist, (x1, x2), x1, x2, p=p, compute_mode=compute_mode
         )
+    if p > 0:
+        _M = x1.size(-1)
+        _max_log = math.log(torch.finfo(x1.dtype).max)
+        if (1.0 / p) * math.log(_M) > _max_log:
+            warnings.warn(
+                f"cdist: p={p} is too small for a {x1.dtype} tensor with {_M} features; "
+                f"the p-norm result will overflow to +inf. "
+                f"Use a larger p value or a higher-precision dtype.",
+                stacklevel=2,
+            )
     if compute_mode == "use_mm_for_euclid_dist_if_necessary":
         return _VF.cdist(x1, x2, p, None)  # type: ignore[attr-defined]
     elif compute_mode == "use_mm_for_euclid_dist":

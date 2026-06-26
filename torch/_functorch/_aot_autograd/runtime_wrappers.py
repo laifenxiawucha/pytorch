@@ -878,7 +878,12 @@ def _codegen_epilogue(
         rw_globals["_replay_aliases_"] = runtime_epilogue._replay_output_aliases
         rw_lines.append("    ret_outs = _replay_aliases_(orig_inputs, fw_outs)")
     else:
-        rw_lines.append("    ret_outs = fw_outs")
+        rw_lines.append("    ret_outs = list(fw_outs)")
+
+    if runtime_metadata.num_unsafe_view_outputs > 0:
+        rw_globals["_unsafe_view"] = torch.ops.aten._unsafe_view
+        for idx in runtime_metadata.unsafe_view_out_indices:
+            rw_lines.append(f"    ret_outs[{idx}] = _unsafe_view(ret_outs[{idx}], ret_outs[{idx}].shape)")
 
     if runtime_metadata.dynamic_outputs:
         rw_globals["_mark_dynamic_"] = mark_dynamo_propagated_dynamic_indices

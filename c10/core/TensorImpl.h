@@ -66,6 +66,13 @@ class TensorBase;
 } // namespace at
 
 namespace c10 {
+namespace impl {
+struct PyInterpreter;
+} // namespace impl
+
+namespace impl {
+struct PyInterpreter;
+} // namespace impl
 
 /**
  * A utility function to convert vector<int> to vector<int64_t>.
@@ -2093,6 +2100,9 @@ struct C10_API TensorImpl : public c10::intrusive_ptr_target {
     ;
   }
 
+ protected:
+  c10::impl::PyInterpreter* pyinterpreter_for_shallow_copy_and_detach() const;
+
  private:
   template <typename VariableVersion>
   c10::intrusive_ptr<TensorImpl> shallow_copy_and_detach_core(
@@ -2806,6 +2816,8 @@ struct C10_API TensorImpl : public c10::intrusive_ptr_target {
       bool allow_tensor_metadata_change);
 
  protected:
+  c10::impl::PyInterpreter* pyinterpreter_for_shallow_copy_and_detach() const;
+
   // Error message to show when the user tries to change tensor metadata on
   // Tensor created from .data or .detach().
   //

@@ -1,10 +1,13 @@
 #include <ATen/core/PythonFallbackKernel.h>
 #include <ATen/core/PythonOpRegistrationTrampoline.h>
+#include <c10/core/impl/LocalDispatchKeySet.h>
 #include <torch/csrc/PyInterpreter.h>
 #include <torch/csrc/THP.h>
 #include <torch/csrc/autograd/generated/VariableType.h>
 #include <torch/csrc/utils/python_arg_parser.h>
 #include <torch/csrc/utils/python_dispatch.h>
+
+#include <c10/core/impl/LocalDispatchKeySet.h>
 
 #include <string>
 
@@ -53,6 +56,9 @@ struct ConcretePyInterpreterVTable final
   // operate upon a PyObjectSlot rather than a TensorImpl
   c10::intrusive_ptr<c10::TensorImpl> detach(
       const c10::TensorImpl* self) const override;
+  bool has_pre_dispatch_torch_dispatch_mode() const override;
+
+  bool has_pre_dispatch_torch_dispatch_mode() const override;
 
   void dispatch(const c10::OperatorHandle& op, torch::jit::Stack* stack)
       const override;
@@ -394,10 +400,76 @@ void ConcretePyInterpreterVTable::python_dispatcher(
   pushPyOutToStack(op, stack, std::move(obj), "Python dispatcher");
 }
 
+bool ConcretePyInterpreterVTable::has_pre_dispatch_torch_dispatch_mode() const {
+  pybind11::gil_scoped_acquire gil;
+  return py::cast<int64_t>(
+             py::module::import("torch._ops")
+                 .attr("_len_torch_dispatch_stack_pre_dispatch")()) > 0;
+}
+
 c10::intrusive_ptr<c10::TensorImpl> ConcretePyInterpreterVTable::detach(
     const c10::TensorImpl* self) const {
   pybind11::gil_scoped_acquire gil;
   at::impl::MaybeSetTLSOnEntryGuard guard;
+
+<<<<<<< Updated upstream
+  py::object out;
+  py::object detach_op =
+      py::module::import("torch").attr("ops").attr("aten").attr("detach").attr(
+          "default");
+  auto call_detach_op = [&]() {
+    at::Tensor self_t = at::Tensor(
+        c10::intrusive_ptr<c10::TensorImpl, c10::UndefinedTensorImpl>::
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+        unsafe_reclaim_from_nonowning(const_cast<c10::TensorImpl*>(self)));
+    auto self_p = py::reinterpret_steal<py::object>(THPVariable_Wrap(self_t));
+    py::tuple args(1);
+    args[0] = std::move(self_p);
+    auto result = py::reinterpret_steal<py::object>(
+        PyObject_Call(detach_op.ptr(), args.ptr(), nullptr));
+    if (result.ptr() == nullptr) {
+      throw python_error();
+    }
+    return result;
+  };
+  const auto pre_dispatch_key_is_active =
+      c10::impl::tls_is_dispatch_key_included(DispatchKey::PreDispatch) &&
+      !c10::impl::tls_is_dispatch_key_excluded(DispatchKey::PreDispatch);
+  if (pre_dispatch_key_is_active && !self->key_set().has(DispatchKey::Python)) {
+    if (has_pre_dispatch_torch_dispatch_mode()) {
+      out = call_detach_op();
+    } else {
+      c10::impl::ExcludeDispatchKeyGuard no_pre_dispatch{
+          c10::DispatchKeySet(DispatchKey::PreDispatch)};
+      out = call_detach_op();
+    }
+  } else {
+    out = torchDispatchFromTensorImpl(
+        self, "detach", detach_op.ptr(), "torch.ops.aten");
+  }
+=======
+  if (c10::impl::tls_is_dispatch_key_included(c10::DispatchKey::PreDispatch)) {
+    // In pre-dispatch mode, dispatch through the normal dispatcher
+    // to ensure the detach call is traced.
+    auto out = torchDispatchFromTensorImpl(
+        self,
+        "detach",
+        py::module::import("torch")
+            .attr("ops")
+            .attr("aten")
+            .attr("detach")
+            .attr("default")
+            .ptr(),
+        "torch.ops.aten");
+
+    TORCH_CHECK(
+        THPVariable_Check(out.ptr()),
+        "detach returned invalid type ",
+        py::detail::get_fully_qualified_tp_name(Py_TYPE(out.ptr())),
+        ", expected Tensor");
+    const at::Tensor& res_t = THPVariable_Unpack(out.ptr());
+    return res_t.getIntrusivePtr();
+  }
 
   auto out = torchDispatchFromTensorImpl(
       self,
@@ -409,6 +481,7 @@ c10::intrusive_ptr<c10::TensorImpl> ConcretePyInterpreterVTable::detach(
           .attr("default")
           .ptr(),
       "torch.ops.aten");
+>>>>>>> Stashed changes
 
   TORCH_CHECK(
       THPVariable_Check(out.ptr()),
@@ -417,6 +490,13 @@ c10::intrusive_ptr<c10::TensorImpl> ConcretePyInterpreterVTable::detach(
       ", expected Tensor");
   const at::Tensor& res_t = THPVariable_Unpack(out.ptr());
   return res_t.getIntrusivePtr();
+}
+
+bool ConcretePyInterpreterVTable::has_pre_dispatch_torch_dispatch_mode() const {
+  pybind11::gil_scoped_acquire gil;
+  return py::cast<int64_t>(
+             py::module::import("torch._ops")
+                 .attr("_len_torch_dispatch_stack_pre_dispatch")()) > 0;
 }
 
 bool ConcretePyInterpreterVTable::is_contiguous(

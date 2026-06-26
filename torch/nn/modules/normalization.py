@@ -57,6 +57,14 @@ class LocalResponseNorm(Module):
         self.alpha = alpha
         self.beta = beta
         self.k = k
+        if k <= 0 and alpha <= 0 and beta != 0:
+            raise ValueError(
+                f"LocalResponseNorm: k and alpha cannot both be non-positive "
+                f"when beta is non-zero; "
+                f"got k={k}, alpha={alpha}, beta={beta}. "
+                f"The denominator k + (alpha/size) * sum(x^2) would collapse to zero "
+                f"and 0^(-beta) = inf."
+            )
 
     def forward(self, input: Tensor) -> Tensor:
         """

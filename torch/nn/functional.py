@@ -3062,6 +3062,14 @@ def local_response_norm(
         return handle_torch_function(
             local_response_norm, (input,), input, size, alpha=alpha, beta=beta, k=k
         )
+    if k <= 0 and alpha <= 0 and beta != 0:
+        raise ValueError(
+            f"local_response_norm: k and alpha cannot both be non-positive "
+            f"when beta is non-zero; "
+            f"got k={k}, alpha={alpha}, beta={beta}. "
+            f"The denominator k + (alpha/size) * sum(x^2) would collapse to zero "
+            f"and 0^(-beta) = inf."
+        )
     dim = input.dim()
     if dim < 3:
         raise ValueError(
@@ -5985,6 +5993,8 @@ def triplet_margin_loss(
         reduction_enum = _Reduction.get_enum(reduction)
     if margin <= 0:
         raise ValueError(f"margin must be greater than 0, got {margin}")
+    if p < 1:
+        raise ValueError(f"triplet_margin_loss: expected p to be >= 1, got {p}")
     return torch.triplet_margin_loss(
         anchor, positive, negative, margin, p, eps, swap, reduction_enum
     )
@@ -6511,6 +6521,138 @@ scaled_dot_product_attention = _add_docstr(
         https://arxiv.org/pdf/2305.13245
     """,
 )
+
+
+def rotary_embedding(
+    x: Tensor,
+    cos: Tensor,
+    sin: Tensor,
+    position_ids: Tensor | None = None,
+    *,
+    interleaved: bool = False,
+) -> Tensor:
+    r"""Apply Rotary Position Embedding (RoPE) to the input tensor.
+
+    RoPE encodes position information by rotating query and key vectors in
+    attention heads. The rotation is applied in the complex plane, where
+    pairs of features are treated as the real and imaginary components. Given
+    input pairs :math:`(x_1, x_2)` and precomputed values
+    :math:`(\cos\theta, \sin\theta)`, the rotation is:
+
+    .. math::
+        \begin{pmatrix} x_1' \\ x_2' \end{pmatrix}
+        =
+        \begin{pmatrix} \cos\theta & -\sin\theta \\ \sin\theta & \cos\theta \end{pmatrix}
+        \begin{pmatrix} x_1 \\ x_2 \end{pmatrix}
+
+    For a head of dimension :math:`D`, the embedding uses :math:`D/2`
+    rotation angles :math:`\theta_i = \text{base}^{-2i/D}` following the
+    original RoPE paper.
+
+    .. note::
+        The ``interleaved`` argument must be a Python ``bool`` literal
+        (``True`` or ``False``) for best ``torch.compile`` performance.
+        Passing a runtime variable causes recompilation on value change
+        but does not error.
+
+    .. note::
+        **HuggingFace cache format:** HuggingFace Transformers precomputes
+        ``cos``/``sin`` caches of shape ``(max_pos, D)`` (values repeated
+        twice across the last dimension). This function expects shape
+        ``(max_pos, D//2)``. To convert, slice:
+        ``cos_hf[..., : head_dim // 2]``.
+
+    .. note::
+        **torchtune layout:** torchtune uses layout ``(B, S, H, D)`` while
+        this function expects ``(B, H, S, D)`` to match
+        :func:`scaled_dot_product_attention`. Permute with
+        ``.transpose(1, 2)`` before and after calling this function.
+
+    .. note::
+        **Frequency scaling / long contexts:** Standard RoPE frequencies
+        (:math:`\theta_i = \text{base}^{-2i/D}`) are used here. For
+        long-context variants (YaRN, NTK, LLaMA3-style scaling) use
+        :class:`~torch.nn.RotaryEmbedding` and override its
+        ``build_rope_cache`` method.
+
+    Args:
+        x (Tensor): Input tensor of shape ``(B, H, S, D)`` where ``B`` is
+            batch size, ``H`` is number of heads, ``S`` is sequence length,
+            and ``D`` is head dimension. ``D`` must be even.
+        cos (Tensor): Cosine values for the rotation.  When ``position_ids``
+            is provided this should be a 2-D tensor of shape
+            ``(N, D//2)`` where ``N >= max(position_ids) + 1``.  When
+            ``position_ids`` is ``None`` this should be broadcastable against
+            ``(B, H, S, D//2)``, e.g. shape ``(S, D//2)`` or
+            ``(1, S, D//2)`` or ``(B, 1, S, D//2)``.
+        sin (Tensor): Sine values for the rotation, same shape requirements
+            as ``cos``.
+        position_ids (Tensor, optional): 2-D integer tensor of shape
+            ``(B, S)`` used to index into ``cos`` and ``sin``. When
+            ``None``, ``cos`` and ``sin`` are used as-is.
+        interleaved (bool): If ``True``, pairs features at even and odd
+            indices (``x[..., 0::2]`` and ``x[..., 1::2]``), matching the
+            GPT-NeoX / gpt-fast convention. If ``False`` (default), splits
+            the head dimension in half (``x[..., :D//2]`` and
+            ``x[..., D//2:]``), matching the LLaMA convention.
+
+    Returns:
+        Tensor: Rotated tensor with the same shape as ``x``.
+
+    Shape:
+        - ``x``: :math:`(B, H, S, D)`
+        - ``cos``, ``sin``: :math:`(N, D//2)` when ``position_ids`` given,
+          otherwise broadcastable to :math:`(B, H, S, D//2)`
+        - ``position_ids``: :math:`(B, S)`
+        - Output: :math:`(B, H, S, D)`
+
+    Example::
+
+        >>> B, H, S, D = 2, 8, 16, 64
+        >>> x = torch.randn(B, H, S, D)
+        >>> # Sequential mode: cos/sin cover the sequence directly
+        >>> cos = torch.cos(torch.arange(S).unsqueeze(1) * 0.01).expand(S, D // 2)
+        >>> sin = torch.sin(torch.arange(S).unsqueeze(1) * 0.01).expand(S, D // 2)
+        >>> out = torch.nn.functional.rotary_embedding(x, cos, sin)
+        >>> out.shape
+        torch.Size([2, 8, 16, 64])
+
+        >>> # Indexed mode: position_ids select rows from a precomputed cache
+        >>> cache_len = 128
+        >>> cos_cache = torch.randn(cache_len, D // 2)
+        >>> sin_cache = torch.randn(cache_len, D // 2)
+        >>> position_ids = torch.arange(S).unsqueeze(0).expand(B, -1)
+        >>> out = torch.nn.functional.rotary_embedding(x, cos_cache, sin_cache, position_ids)
+        >>> out.shape
+        torch.Size([2, 8, 16, 64])
+
+    .. _RoPE\: RoFormer\: Enhanced Transformer with Rotary Position Embedding:
+        https://arxiv.org/abs/2104.09864
+    """
+    if has_torch_function_variadic(x, cos, sin):
+        return handle_torch_function(
+            rotary_embedding,
+            (x, cos, sin),
+            x,
+            cos,
+            sin,
+            position_ids,
+            interleaved=interleaved,
+        )
+
+    if position_ids is not None:
+        cos = cos[position_ids].unsqueeze(1)
+        sin = sin[position_ids].unsqueeze(1)
+
+    if interleaved:
+        x1 = x[..., 0::2]
+        x2 = x[..., 1::2]
+        real = x1 * cos - x2 * sin
+        imag = x1 * sin + x2 * cos
+        return torch.stack([real, imag], dim=-1).flatten(-2)
+    else:
+        x1, x2 = x.chunk(2, dim=-1)
+        return torch.cat([x1 * cos - x2 * sin, x1 * sin + x2 * cos], dim=-1)
 
 
 def _mha_shape_check(

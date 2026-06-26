@@ -483,6 +483,10 @@ def run_functionalized_fw_and_collect_metadata(
             if isinstance(grad_fn, torch.autograd.function.BackwardCFunction):
                 is_result_of_custom_autograd_fn = True
 
+            functional_tensor_metadata_mutated = isinstance(
+                o, FunctionalTensor
+            ) and torch._functionalize_has_metadata_mutation(o.elem)  # type: ignore[attr-defined]
+
             if not isinstance(o, Tensor):
                 output_type = OutputType.non_alias
                 base_idx = None
@@ -538,6 +542,17 @@ alias each other from a multi-output view call"
                 base_idx = inp_storage_refs[curr_storage]
                 output_type = OutputType.is_input
 
+            elif (
+                isinstance(o, FunctionalTensor)
+                and curr_storage not in inp_storage_refs
+                and not o._is_view()
+                and o.requires_grad
+                and grad_fn is not None
+                and functional_tensor_metadata_mutated
+            ):
+                output_type = OutputType.unsafe_view_alias
+                base_idx = None
+
             # We only need to handle the intermediate base case when both
             # the intermediate base and the output require gradients.
             # See Note [AOT Autograd: outputs aliasing inputs or intermediates!]
@@ -550,7 +565,7 @@ alias each other from a multi-output view call"
                     num_aliased_outs - num_multi_output_view_outs
                 )
                 # Note: [AOTAutograd: differentiable outputs that alias each other from a multi-output view call]
-                if (
+                if not functional_tensor_metadata_mutated and (
                     out_tensor_alias_counts[curr_storage] == 1
                     or num_aliased_outs_that_are_not_multi_output_views <= 1
                 ):

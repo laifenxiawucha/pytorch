@@ -58,6 +58,16 @@ class Gumbel(TransformedDistribution):
         ]
         super().__init__(base_dist, transforms, validate_args=validate_args)
 
+    def icdf(self, value):
+        result = super().icdf(value)
+        result = torch.where(
+            torch.as_tensor(value == 0), torch.full_like(result, -float("inf")), result
+        )
+        result = torch.where(
+            torch.as_tensor(value == 1), torch.full_like(result, float("inf")), result
+        )
+        return result
+
     def expand(self, batch_shape, _instance=None):
         new = self._get_checked_instance(Gumbel, _instance)
         new.loc = self.loc.expand(batch_shape)

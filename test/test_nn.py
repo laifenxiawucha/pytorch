@@ -7671,6 +7671,28 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
                 self.assertEqual(layer.state_dict()[key].device, converted_layer.state_dict()[key].device)
                 self.assertEqual(layer.state_dict()[key], converted_layer.state_dict()[key])
 
+    def test_convert_sync_batchnorm_warns_on_subclass(self):
+        class BatchNormAct2d(nn.BatchNorm2d):
+            def __init__(self, num_features):
+                super().__init__(num_features)
+                self.act = nn.ReLU()
+
+            def forward(self, x):
+                return self.act(super().forward(x))
+
+        with self.assertWarnsRegex(UserWarning, "BatchNormAct2d"):
+            torch.nn.SyncBatchNorm.convert_sync_batchnorm(BatchNormAct2d(4))
+
+        for stock in (
+            nn.BatchNorm1d(4),
+            nn.BatchNorm2d(4),
+            nn.BatchNorm3d(4),
+            nn.SyncBatchNorm(4),
+        ):
+            with warnings.catch_warnings():
+                warnings.simplefilter("error")
+                torch.nn.SyncBatchNorm.convert_sync_batchnorm(stock)
+
     @unittest.skipIf(not TEST_CUDA, "CUDA not available")
     def test_sync_batchnorm_backward_elemt(self):
         device = 'cuda'

@@ -1,4 +1,5 @@
 # mypy: allow-untyped-defs
+import warnings
 from typing import Any
 
 import torch
@@ -924,6 +925,25 @@ class SyncBatchNorm(_BatchNorm):
         """
         module_output = module
         if isinstance(module, torch.nn.modules.batchnorm._BatchNorm):
+            # Rebuilding a _BatchNorm subclass as a plain SyncBatchNorm drops
+            # subclass-only behavior such as overridden forward logic or child
+            # modules. Warn so callers can supply a custom conversion.
+            _BatchNorm = torch.nn.modules.batchnorm._BatchNorm
+            has_custom_forward = type(module).forward not in (
+                _BatchNorm.forward,
+                torch.nn.SyncBatchNorm.forward,
+            )
+            has_children = any(module.children())
+            if has_custom_forward or has_children:
+                warnings.warn(
+                    f"convert_sync_batchnorm rebuilds {type(module).__name__} as a "
+                    "plain SyncBatchNorm and only copies the BatchNorm attributes. "
+                    "Its custom behavior (an overridden forward and/or child "
+                    "modules) will not be carried over and may silently change the "
+                    "model's output. Provide a custom conversion for this module if "
+                    "that behavior must be preserved.",
+                    stacklevel=2,
+                )
             module_output = torch.nn.SyncBatchNorm(
                 module.num_features,
                 module.eps,

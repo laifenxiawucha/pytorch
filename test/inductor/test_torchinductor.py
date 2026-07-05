@@ -20343,6 +20343,25 @@ if RUN_GPU:
             self.assertIn("0x80000000", code[0])
             torch.testing.assert_close(result, fn(inp))
 
+        @requires_gpu_and_triton
+        def test_nextafter_non_contiguous_half(self):
+            def fn(x, y):
+                return torch.nextafter(x, y)
+
+            base = torch.tensor(
+                [[-0.0, -1.0], [0.0, 2.0], [1.0, -2.0]],
+                device=GPU_TYPE,
+                dtype=torch.float16,
+            )
+            x = base.t()
+            y = torch.zeros_like(x)
+
+            expected = fn(x, y)
+            actual = torch.compile(fn, backend="inductor", fullgraph=True)(x, y)
+
+            self.assertFalse(torch.equal(actual, x))
+            torch.testing.assert_close(actual, expected)
+
         def test_3d_reductions_with_max_tiles_3(self):
             # Inductor only supports at most two reduction iteration ranges, R0 and R1, which the
             # reduction component of the kernel can be tiled across.

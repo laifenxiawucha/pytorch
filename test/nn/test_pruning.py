@@ -392,6 +392,26 @@ class TestPruningNN(NNTestCase):
         with self.assertRaises(TypeError):
             container.add_pruning_method("ugh")
 
+    def test_pruning_container_add_to_empty_adopts_tensor_name(self):
+        container = prune.PruningContainer()
+
+        p = prune.L1Unstructured(amount=2)
+        p._tensor_name = "test"
+        container.add_pruning_method(p)
+
+        self.assertEqual(container._tensor_name, "test")
+        self.assertEqual(len(container), 1)
+
+        q = prune.RandomUnstructured(amount=2)
+        q._tensor_name = "test"
+        container.add_pruning_method(q)
+        self.assertEqual(len(container), 2)
+
+        r = prune.L1Unstructured(amount=2)
+        r._tensor_name = "another_test"
+        with self.assertRaises(ValueError):
+            container.add_pruning_method(r)
+
     def test_pruning_container_compute_mask(self):
         r"""Test `compute_mask` of pruning container with a known `t` and
         `default_mask`. Indirectly checks that Ln structured pruning is

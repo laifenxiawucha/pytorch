@@ -300,10 +300,14 @@ class PruningContainer(BasePruningMethod):
         # check that we're adding a pruning method to the container
         if not isinstance(method, BasePruningMethod) and method is not None:
             raise TypeError(f"{type(method)} is not a BasePruningMethod subclass")
-        elif method is not None and self._tensor_name != method._tensor_name:
+        tensor_name = getattr(self, "_tensor_name", None)
+        if method is not None and tensor_name is None:
+            self._tensor_name = method._tensor_name
+            tensor_name = self._tensor_name
+        elif method is not None and tensor_name != method._tensor_name:
             raise ValueError(
                 "Can only add pruning methods acting on "
-                f"the parameter named '{self._tensor_name}' to PruningContainer {self}."
+                f"the parameter named '{tensor_name}' to PruningContainer {self}."
                 + f" Found '{method._tensor_name}'"
             )
         # if all checks passed, add to _pruning_methods tuple

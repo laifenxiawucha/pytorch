@@ -2894,17 +2894,17 @@ class FakeTensorOperatorInvariants(TestCase):
         "https://github.com/pytorch/pytorch/issues/165387",
     )
     @expectedFailurePropagateRealTensors
-    @unittest.skipIf(not RUN_CUDA, "requires cuda")
+    @unittest.skipIf(device_type == "cpu", "requires an accelerator")
     def test_module_to(self):
-        def _check_device(sd, device_type):
+        def _check_device(sd, dev_type):
             for v in sd.values():
-                self.assertEqual(v.device.type, device_type)
+                self.assertEqual(v.device.type, dev_type)
 
         with FakeTensorMode():
             m = torch.nn.Linear(2, 2)
             _check_device(m.state_dict(), "cpu")
-            m.to("cuda")
-            _check_device(m.state_dict(), "cuda")
+            m.to(device_type)
+            _check_device(m.state_dict(), device_type)
 
 
 make_propagate_real_tensors_cls(FakeTensorOperatorInvariants)

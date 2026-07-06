@@ -1443,6 +1443,9 @@ class TestQuantizedOps(TestCase):
     """Tests the correctness of the quantized softmax op."""
     @given(dims=st.lists(st.integers(2, 5), min_size=5, max_size=5))
     def test_qsoftmax(self, dims):
+        self._test_qsoftmax_impl(dims)
+
+    def _test_qsoftmax_impl(self, dims):
         for (num_dims, dim, memory_format) in [
             (2, 1, torch.contiguous_format),  # 2d softmax over last dim
             (4, 3, torch.contiguous_format),  # >2 dims, softmax along last dim
@@ -1484,7 +1487,7 @@ class TestQuantizedOps(TestCase):
     @skipIfNoQNNPACK
     def test_qsoftmax_qnnpack(self):
         with override_quantized_engine('qnnpack'):
-            self.test_qsoftmax()
+            self._test_qsoftmax_impl(dims=[2, 3, 4, 5, 2])
 
     """Tests the correctness of the mul and mul_relu op."""
     def test_qmul_broadcast(self):

@@ -30,7 +30,7 @@ import torch.nn.functional as F
 import torch.utils._pytree as pytree
 from functorch.experimental.control_flow import cond, map
 from torch import Tensor
-from torch._decomp import decomposition_table, get_decompositions
+from torch._decomp import get_decompositions
 from torch._dynamo._trace_wrapped_higher_order_op import mod_index
 from torch._dynamo.test_case import TestCase
 from torch._dynamo.testing import normalize_gm
@@ -580,6 +580,31 @@ class InputModuleWithNestedSubclass(torch.nn.Module):
 @unittest.skipIf(IS_WINDOWS, "Windows isn't supported for this case")
 @unittest.skipIf(not torchdynamo.is_dynamo_supported(), "dynamo isn't support")
 class TestExport(TestCase):
+    def test_strict_export_constant_props_small_shape_tensor(self):
+        class M(torch.nn.Module):
+            def forward(self, x):
+                spatial_shapes = []
+                for xi in x:
+                    spatial_shapes.append(xi.shape[2:])
+
+                spatial_shapes = torch.as_tensor(spatial_shapes, dtype=torch.long)
+                reference_points_list = []
+                for H, W in spatial_shapes:
+                    reference_points_list.append(
+                        torch.linspace(0.5, H - 0.5, H, dtype=torch.float32)
+                    )
+                return reference_points_list
+
+        example_kwargs = {
+            "x": [
+                torch.rand(1, 3, 64, 64),
+                torch.rand(1, 3, 32, 32),
+            ],
+        }
+
+        ep = export(M(), (), kwargs=example_kwargs, strict=True)
+        self.assertEqual(ep.module()(**example_kwargs), M()(**example_kwargs))
+
     def _test_export_same_as_eager(self, f, args, kwargs=None):
         kwargs = kwargs or {}
         exported_program = export(f, args, kwargs)
@@ -5645,16 +5670,15 @@ def forward(self, p_conv_weight, p_conv_bias, p_conv1d_weight, p_conv1d_bias, b_
     return (add,)""",
         )
 
-    @unittest.skip("See https://github.com/pytorch/pytorch/issues/135759")
     def test_error_when_passing_mutating_primitive_op(self):
         class Foo(torch.nn.Module):
             def forward(self, x):
                 return x.sin()
 
         ep = export(Foo(), (torch.ones(3, 3),))
-        with self.assertWarnsRegex(
-            UserWarning,
-            "The op aten.index_put_.default",
+        with self.assertRaisesRegex(
+            ValueError,
+            "non-functional operator.*aten::index_put_",
         ):
             ep.run_decompositions({torch.ops.aten.index_put_.default: None})
 
@@ -9720,7 +9744,7 @@ graph():
                 torch.ops.aten._assert_async.msg(torch.tensor(True), "Fail")
                 return x
 
-        decomp_table = {**default_decompositions(), **decomposition_table}
+        decomp_table = default_decompositions()
 
         ep = torch.export.export(M(), (torch.randn(2, 2),)).run_decompositions(
             decomp_table
@@ -9730,7 +9754,7 @@ graph():
             str(ep.graph_module.code).strip(),
             """\
 def forward(self, c_lifted_tensor_0, x):
-    clone = torch.ops.prims.clone.default(c_lifted_tensor_0, memory_format = torch.preserve_format);  c_lifted_tensor_0 = None
+    clone = torch.ops.aten.clone.default(c_lifted_tensor_0);  c_lifted_tensor_0 = None
     _assert_async = torch.ops.aten._assert_async.msg(clone, 'Fail');  clone = _assert_async = None
     return (x,)""",
         )
@@ -18848,7 +18872,7 @@ def forward(self, x):
                     self.model, args=self.example_inputs
                 )
                 self.exp_program = self.exp_program.run_decompositions(
-                    get_decompositions([torch.ops.aten.new_full])
+                    get_decompositions([torch.ops.aten.new_full.default])
                 )
 
             def forward(self, *args, **kwargs):

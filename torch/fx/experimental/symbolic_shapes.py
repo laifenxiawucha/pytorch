@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sympy
 from sympy import S
+from sympy.core.relational import Relational
 
 from torch._prims_common import BoolLike, FloatLike, IntLike
 
@@ -86,6 +87,7 @@ from torch.utils._sympy.functions import (
     IntTrueDiv,
     IsNonOverlappingAndDenseIndicator,
     Max,
+    Min,
     Mod,
     PythonMod,
     TruncToInt,
@@ -862,8 +864,13 @@ def _canonicalize_bool_expr_impl(expr: SympyBoolean) -> SympyBoolean:
     if isinstance(expr, (sympy.And, sympy.Or)):
         return type(expr)(*map(canonicalize_bool_expr, expr.args))
 
+    if isinstance(expr, Relational) and not (
+        isinstance(expr.lhs, sympy.Expr) and isinstance(expr.rhs, sympy.Expr)
+    ):
+        return expr
+
     opposite = {sympy.Gt: sympy.Lt, sympy.Ge: sympy.Le}
-    t: type[Any]
+    t: type[Relational]
     if isinstance(expr, tuple(opposite.keys())):
         rhs = expr.lhs - expr.rhs  # type: ignore[attr-defined]
         t = opposite[type(expr)]  # type: ignore[index]
@@ -7393,21 +7400,33 @@ class ShapeEnv:
         expr = safe_expand(expr)
         expr = self.replace(expr)
 
-        # Simplify max(0/1, x) to x when x >= 0/1. max(1, x) is a commonly introduced
-        # expression when creating contiguous strides.
+        # Simplify Min/Max n-ary expressions by dropping arguments that are
+        # statically known to be dominated by others. For Min: drop b if a <= b
+        # (bigger is never the minimum). For Max: drop a if a <= b (smaller is
+        # never the maximum). Also catches the common max(1, x) pattern in
+        # contiguous stride expressions.
         if not size_oblivious:
             min_max_replacements: dict[sympy.Basic, sympy.Basic] = {}
-            for atom in expr.atoms(Max):  # type: ignore[has-type]
-                if len(atom.args) > 2:
-                    continue
-                a, b = atom.args
-                if b == 1 or b == 0:
-                    a, b = b, a
-
-                if a == 1 and self._maybe_evaluate_static(sympy.Ge(b, 1)):
-                    min_max_replacements[atom] = b
-                if a == 0 and self._maybe_evaluate_static(sympy.Ge(b, 0)):
-                    min_max_replacements[atom] = b
+            for atom in expr.atoms(Min, Max):  # type: ignore[has-type]
+                args = list(atom.args)
+                new_args: list[sympy.Basic] = []
+                for i, a in enumerate(args):
+                    keep = True
+                    for j, b in enumerate(args):
+                        if i == j:
+                            continue
+                        if self._maybe_evaluate_static(a <= b):
+                            if isinstance(atom, sympy.Min):
+                                if not (a == b and i < j):
+                                    keep = False
+                                    break
+                            else:
+                                keep = False
+                                break
+                    if keep:
+                        new_args.append(a)
+                if len(new_args) < len(args):
+                    min_max_replacements[atom] = atom.func(*new_args, evaluate=False)
             if min_max_replacements:
                 expr = expr.xreplace(min_max_replacements)
 

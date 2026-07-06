@@ -1391,7 +1391,7 @@ class MultiheadAttention(Module):
                 "supplying both src_key_padding_mask and src_mask at the same time \
                                  is not supported with NestedTensor input"
             )
-        elif torch.is_autocast_enabled():
+        elif torch.is_autocast_enabled() or torch._C._is_any_autocast_enabled():
             why_not_fast_path = "autocast is enabled"
 
         fast_path_blocked_by_tracing = False

@@ -227,6 +227,21 @@ class TestBinaryUfuncs(TestCase):
                 expected = torch.lerp(xref, yref, wref).to(dtype)
                 self.assertEqual(actual, expected, atol=0.0, rtol=0.0)
 
+    def test_ldexp_backward_negative_exponent(self):
+        mantissa = torch.tensor([1.0], requires_grad=True)
+        exponent = torch.tensor([-1], dtype=torch.int32)
+
+        torch.ldexp(mantissa, exponent).sum().backward()
+
+        self.assertEqual(mantissa.grad, torch.tensor([0.5]))
+
+        with fwAD.dual_level():
+            mantissa_dual = fwAD.make_dual(torch.tensor([1.0]), torch.tensor([1.0]))
+            result = torch.ldexp(mantissa_dual, exponent)
+            _, result_tangent = fwAD.unpack_dual(result)
+
+        self.assertEqual(result_tangent, torch.tensor([0.5]))
+
 
 class TestBinaryUfuncsDevice(TestCase):
     # Generic tests for elementwise binary (AKA binary universal (u) functions (funcs))

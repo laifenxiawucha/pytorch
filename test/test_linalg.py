@@ -1649,6 +1649,17 @@ class TestLinalg(TestCase):
             with self.assertRaisesRegex(RuntimeError, f"linalg.cond got an invalid norm type: {p}"):
                 torch.linalg.cond(a, p)
 
+    @skipCPUIfNoLapack
+    @skipCUDAIfNoMagmaAndNoLinalgsolver
+    @dtypes(torch.float32, torch.float64)
+    def test_cond_dynamic_shapes(self, device, dtype):
+        # linalg.cond(p="fro") previously called self.numel() which raises for
+        # symbolic sizes under torch.compile(dynamic=True). It now uses sym_numel().
+        x = torch.randn(4, 4, device=device, dtype=dtype)
+        fn = torch.compile(lambda x: torch.linalg.cond(x, p="fro"), dynamic=True)
+        result = fn(x)
+        self.assertEqual(result.shape, ())
+
     # This test calls torch.linalg.norm and numpy.linalg.norm with illegal arguments
     # to ensure that they both throw errors
     @dtypes(torch.float, torch.double)

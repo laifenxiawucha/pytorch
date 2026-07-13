@@ -93,7 +93,14 @@ class Cauchy(Distribution):
         return torch.atan((value - self.loc) / self.scale) / math.pi + 0.5
 
     def icdf(self, value):
-        return torch.tan(math.pi * (value - 0.5)) * self.scale + self.loc
+        result = torch.tan(math.pi * (value - 0.5)) * self.scale + self.loc
+        # The tan pole at q=0 / q=1 lands on the wrong side under float rounding
+        # (sign-flips in float32); the Cauchy support is unbounded, so the
+        # boundary quantiles are -inf / +inf for scale > 0.
+        value = torch.as_tensor(value)
+        result = torch.where(value == 0, torch.full_like(result, -inf), result)
+        result = torch.where(value == 1, torch.full_like(result, inf), result)
+        return result
 
     def entropy(self):
         return math.log(4 * math.pi) + self.scale.log()

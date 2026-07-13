@@ -3190,9 +3190,19 @@ def _max_unpoolnd(
                 f"spatial dimensions, but got output_size[{i}]={size}"
             ),
         )
+    # The native 4D max_unpool2d kernel preserves the input's memory format
+    # (both the CPU and XPU eager implementations mirror the input layout, e.g.
+    # channels-last stays channels-last), while the 3D kernels always return
+    # contiguous output. Match that so the decomposition's strides agree with
+    # eager and Inductor does not diverge on channels-last inputs.
+    def _restride(t: TensorLike) -> TensorLike:
+        if dim == 2 and self.device.type in ("cpu", "xpu"):
+            return t.contiguous(memory_format=utils.suggest_memory_format(self))
+        return t
+
     output_shape = list(self.shape[:-dim]) + list(output_size)
     if any(s == 0 for s in output_shape):
-        return self.new_zeros(output_shape)
+        return _restride(self.new_zeros(output_shape))
     nc = reduce(operator.mul, self.shape[:-dim])
     hw = reduce(operator.mul, output_size)
     indices_nc_shape = [1] * self.ndim
@@ -3202,9 +3212,10 @@ def _max_unpoolnd(
     ).reshape(-1)
 
     output = self.new_zeros(output_shape)
-    return aten._unsafe_index_put(
+    result = aten._unsafe_index_put(
         output.reshape(-1), [indices_flat], self.reshape(-1), accumulate=False
     ).view(output.shape)
+    return _restride(result)
 
 
 @register_decomposition(aten.max_unpool2d)

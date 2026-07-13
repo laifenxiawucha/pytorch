@@ -5549,6 +5549,28 @@ for dtype in (torch.int32, torch.int64):
         x3d = torch.randn(1, 1, 1, 1, 1, device=self.device)
         self.common(Unpool3d().to(self.device), (x3d, x3d.long()))
 
+    def test_max_unpool2d_channels_last(self):
+        # max_unpool2d preserves the input memory format in eager (channels-last
+        # stays channels-last on both CPU and XPU); the decomposition must match
+        # so compiled strides agree with eager.
+        pool_input = torch.randn(1, 2, 3, 6, device=self.device).to(
+            memory_format=torch.channels_last
+        )
+        pooled, indices = torch.nn.functional.max_pool2d(
+            pool_input, kernel_size=3, padding=1, return_indices=True
+        )
+
+        def fn(x, idx):
+            return torch.nn.functional.max_unpool2d(
+                x, idx, kernel_size=3, stride=3, padding=1, output_size=(3, 6)
+            )
+
+        eager = fn(pooled, indices)
+        torch._dynamo.reset()
+        compiled = torch.compile(fn)(pooled, indices)
+        self.assertEqual(eager.stride(), compiled.stride())
+        self.assertEqual(eager, compiled)
+
     def test_to_dtype(self):
         new_dtype = torch.float64 if self.device != "mps" else torch.bfloat16
 

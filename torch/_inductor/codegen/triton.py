@@ -965,6 +965,24 @@ class TritonPrinter(PythonPrinter):  # noqa: docstring_linter
         div_s = self._print(div)
         return f"triton_helpers.remainder_integer({quot_s}, {div_s})"
 
+    def _print_ModularIndexing(self, expr: sympy.Expr) -> str:
+        # ModularIndexing(x, div, mod) == (x // div) % mod with Python (floor)
+        # semantics. Triton's // and % are C-style (truncate toward zero), which
+        # differs for negative x, so emit the floor-semantics helpers unless the
+        # base is provably nonnegative.
+        x, div, mod = (
+            self.parenthesize(arg, PRECEDENCE["Atom"] - 0.5) for arg in expr.args
+        )
+        x_arg, div_arg, mod_arg = expr.args
+        if div_arg != 1:
+            if x_arg.is_nonnegative and div_arg.is_nonnegative:
+                x = f"({x} // {div})"
+            else:
+                x = f"triton_helpers.div_floor_integer({x}, {div})"
+        if x_arg.is_nonnegative and mod_arg.is_nonnegative:
+            return f"({x} % {mod})"
+        return f"triton_helpers.remainder_integer({x}, {mod})"
+
     def _print_FloorDiv(self, expr: sympy.Expr) -> str:
         if not expr.is_integer:
             raise AssertionError("expr must be integer")

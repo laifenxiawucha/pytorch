@@ -6968,6 +6968,21 @@ for dtype in (torch.int32, torch.int64):
             (torch.tensor([2, 4, 6]),),
         )
 
+    @requires_gpu()
+    def test_flip_repeat_interleave_dynamic(self):
+        # flip after repeat_interleave builds a negative ModularIndexing base;
+        # under dynamic shapes the Triton index must use floor division/modulo
+        # (Triton's // and % truncate toward zero), otherwise it reads an
+        # out-of-bounds element and diverges from eager.
+        def fn(x):
+            return torch.repeat_interleave((x + 1).flatten(), 2).flip(0)
+
+        x = torch.randn(8, 8, device=GPU_TYPE)
+        ref = fn(x)
+        torch._dynamo.reset()
+        compiled = torch.compile(fn, dynamic=True)(x)
+        self.assertEqual(ref, compiled)
+
     @config.patch(fallback_random=True)
     def test_randn_with_dtype_and_device(self):
         if self.device == GPU_TYPE:

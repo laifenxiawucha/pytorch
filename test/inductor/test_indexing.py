@@ -619,7 +619,16 @@ class ExprPrinterTests(InductorTestCase):
             """(static_cast<int64_t>(c10::div_floor_integer("""
             f"""static_cast<int64_t>((-10{LONG_SUFFIX}) + x), static_cast<int64_t>(ks))) % static_cast<int64_t>(ks))""",
         )
-        self.assertExpectedInline(texpr(expr), """((((-10) + x) // ks) % ks)""")
+        self.assertExpectedInline(
+            texpr(expr),
+            """triton_helpers.remainder_integer(triton_helpers.div_floor_integer(((-10) + x), ks), ks)""",  # noqa: B950
+        )
+        # A provably-nonnegative base keeps the cheaper truncating // and %.
+        xn = sympy.Symbol("xn", integer=True, nonnegative=True)
+        ksn = sympy.Symbol("ksn", integer=True, nonnegative=True)
+        self.assertExpectedInline(
+            texpr(ModularIndexing(xn, ksn, ksn)), """((xn // ksn) % ksn)"""
+        )
 
     def test_print_python_mod(self):
         x = sympy.Symbol("x", integer=True)

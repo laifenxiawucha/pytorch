@@ -186,7 +186,12 @@ sycl::event convolution_backward_weights(
   auto& engine = GpuEngineManager::Instance().get_engine();
   auto& stream = GpuStreamManager::Instance().get_stream();
 
-  bool is_channels_last = use_channels_last_for_conv(src, diff_dst);
+  // Derive the layout flag from diff_weight (the buffer this pass writes), not
+  // diff_dst: at 1x1 spatial/kernel shapes channels-last and contiguous strides
+  // coincide, so a diff_dst-derived flag can mislabel a channels-last
+  // diff_weight buffer as oihw and produce silently wrong gradients (#1966,
+  // pytorch/pytorch#190773).
+  bool is_channels_last = use_channels_last_for_conv(src, diff_weight);
 
   // create dnnl::memory desc
   auto [src_md, weight_md, dst_md] =
@@ -293,7 +298,10 @@ sycl::event convolution_backward_data(
   auto& engine = GpuEngineManager::Instance().get_engine();
   auto& stream = GpuStreamManager::Instance().get_stream();
 
-  bool is_channels_last = use_channels_last_for_conv(diff_dst, weight);
+  // Derive the layout flag from diff_src (the buffer this pass writes), not
+  // diff_dst, for the same 1x1 layout-aliasing reason as backward_weights
+  // (#1966, pytorch/pytorch#190773).
+  bool is_channels_last = use_channels_last_for_conv(diff_src, weight);
 
   // create memory desc
   auto [src_md, weight_md, dst_md] =

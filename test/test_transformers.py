@@ -4884,6 +4884,16 @@ class TestSDPAXpuOnly(NNTestCase):
     Mostly migrate from TestSDPACudaOnly in test/test_transformers.py
     """
 
+    def test_zero_kv_heads_raise(self, device):
+        query = torch.rand((2, 4, 8, 16), device=device)
+        key = torch.rand((2, 0, 8, 16), device=device)
+        value = torch.rand((2, 0, 8, 16), device=device)
+        with self.assertRaises(RuntimeError):
+            F.scaled_dot_product_attention(query, key, value, enable_gqa=True)
+        with self.assertRaises(RuntimeError):
+            torch.ops.aten._scaled_dot_product_fused_attention_overrideable.default(
+                query, key, value
+            )
 
     @parametrize("type", ["dense"])
     @parametrize("dropout", [0.0, 0.7])
